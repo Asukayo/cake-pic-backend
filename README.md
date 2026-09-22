@@ -90,7 +90,7 @@ mvn spring-boot:run
 | 入口 | 地址 |
 | --- | --- |
 | 健康检查 | `GET /health` |
-| 接口文档 | Knife4j（见 `docs/api/` 下的接口总览与联调指南） |
+| 接口文档 | 启动后访问 `http://localhost:8123/api/doc.html`（Knife4j 在线文档） |
 
 ## 📄 接口一览
 
