@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 310" font-family="Segoe UI, Microsoft YaHei, PingFang SC, sans-serif">
+  <defs>
+    <marker id="arr2" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 z" fill="#333333"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1180" height="310" fill="#ffffff"/>
+
+  <g font-size="12" text-anchor="middle">
+    <rect x="30" y="60" width="200" height="70" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+    <text x="130" y="90">用户发起图片删除</text>
+    <text x="130" y="108" font-size="11" fill="#555">DELETE /api/pic/update</text>
+
+    <rect x="260" y="60" width="200" height="70" rx="8" fill="#d5e8d4" stroke="#82b366" stroke-width="1.5"/>
+    <text x="360" y="83">同事务落库</text>
+    <text x="360" y="100" font-size="11" fill="#555">逻辑删除图片记录</text>
+    <text x="360" y="115" font-size="11" fill="#555">+ 写入 Outbox 消息表</text>
+
+    <rect x="490" y="60" width="200" height="70" rx="8" fill="#ffe6cc" stroke="#d79b00" stroke-width="1.5"/>
+    <text x="590" y="83">OutboxMessagePublisher</text>
+    <text x="590" y="100" font-size="11" fill="#555">定时扫描未投递消息</text>
+    <text x="590" y="115" font-size="11" fill="#555">可靠投递到 Kafka</text>
+
+    <rect x="720" y="60" width="200" height="70" rx="8" fill="#e1d5e7" stroke="#9673a6" stroke-width="1.5"/>
+    <text x="820" y="90">Kafka</text>
+    <text x="820" y="108" font-size="11" fill="#555">picture.cleanup.requested</text>
+
+    <rect x="950" y="60" width="200" height="70" rx="8" fill="#e1d5e7" stroke="#9673a6" stroke-width="1.5"/>
+    <text x="1050" y="83">PictureCleanupConsumer</text>
+    <text x="1050" y="100" font-size="11" fill="#555">幂等消费</text>
+    <text x="1050" y="115" font-size="11" fill="#555">处理成功后手动 ACK</text>
+  </g>
+
+  <g stroke="#333" stroke-width="1.5">
+    <line x1="230" y1="95" x2="256" y2="95" marker-end="url(#arr2)"/>
+    <line x1="460" y1="95" x2="486" y2="95" marker-end="url(#arr2)"/>
+    <line x1="690" y1="95" x2="716" y2="95" marker-end="url(#arr2)"/>
+    <line x1="920" y1="95" x2="946" y2="95" marker-end="url(#arr2)"/>
+  </g>
+
+  <g font-size="12" text-anchor="middle">
+    <rect x="950" y="210" width="200" height="70" rx="8" fill="#f5f5f5" stroke="#666666" stroke-width="1.5"/>
+    <text x="1050" y="240">删除 COS 文件</text>
+    <text x="1050" y="258" font-size="11" fill="#555">原图 + 缩略图</text>
+
+    <rect x="720" y="210" width="200" height="70" rx="8" fill="#d5e8d4" stroke="#82b366" stroke-width="1.5"/>
+    <text x="820" y="240">最终一致</text>
+    <text x="820" y="258" font-size="11" fill="#555">消息标记完成 · 记录已删除</text>
+  </g>
+
+  <g stroke="#333" stroke-width="1.5">
+    <line x1="1050" y1="130" x2="1050" y2="206" marker-end="url(#arr2)"/>
+    <line x1="950" y1="245" x2="924" y2="245" marker-end="url(#arr2)"/>
+  </g>
+
+  <g font-size="12" text-anchor="middle">
+    <rect x="260" y="210" width="200" height="70" rx="8" fill="#fff2cc" stroke="#d6b656" stroke-width="1.5"/>
+    <text x="360" y="240">恢复补偿定时任务</text>
+    <text x="360" y="258" font-size="11" fill="#555">PictureCleanupRecoveryJob</text>
+  </g>
+  <path d="M460,245 L590,245 L590,134" fill="none" stroke="#333" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arr2)"/>
+  <text x="500" y="236" font-size="11" fill="#555">重投未确认消息</text>
+</svg>

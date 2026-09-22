@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.sharkycake.mapper.MessageOutboxMapper">
+
+    <resultMap id="BaseResultMap" type="com.sharkycake.model.entity.MessageOutbox">
+            <id property="id" column="id" />
+            <result property="eventId" column="eventId" />
+            <result property="topic" column="topic" />
+            <result property="payload" column="payload" />
+            <result property="sendStatus" column="sendStatus" />
+            <result property="retryCount" column="retryCount" />
+            <result property="nextRetryTime" column="nextRetryTime" />
+            <result property="lastError" column="lastError" />
+            <result property="createTime" column="createTime" />
+            <result property="updateTime" column="updateTime" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,eventId,topic,payload,sendStatus,retryCount,
+        nextRetryTime,lastError,createTime,updateTime
+    </sql>
+</mapper>
