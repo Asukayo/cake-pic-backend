@@ -8,7 +8,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @EnableAsync
 @SpringBootApplication
-//@MapperScan("com.sharkycake.mapper")
 @EnableAspectJAutoProxy(exposeProxy = true)
 @EnableScheduling()
 public class CakePicBackendApplication {

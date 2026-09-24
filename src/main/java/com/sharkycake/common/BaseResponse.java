@@ -1,6 +1,6 @@
 package com.sharkycake.common;
 
-import com.sharkycake.exception.ErrorCode;
+import com.sharkycake.common.exception.ErrorCode;
 import lombok.Data;
 
 import java.io.Serializable;

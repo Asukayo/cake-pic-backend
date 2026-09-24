@@ -24,6 +24,21 @@
       "key": "picture:delete",
       "name": "删除图片",
       "description": "删除空间中的图片"
+    },
+    {
+      "key": "proofing:view",
+      "name": "查看选单",
+      "description": "查看选单中的图片"
+    },
+    {
+      "key": "proofing:manage",
+      "name": "操作选单",
+      "description": "操作选单中的图片"
+    },
+    {
+      "key": "proofing:close",
+      "name": "关闭选单",
+      "description": "关闭选单"
     }
   ],
   "roles": [
@@ -31,9 +46,10 @@
       "key": "viewer",
       "name": "浏览者",
       "permissions": [
-        "picture:view"
+        "picture:view",
+        "proofing:view"
       ],
-      "description": "查看图片"
+      "description": "查看图片及选单"
     },
     {
       "key": "editor",
@@ -42,9 +58,11 @@
         "picture:view",
         "picture:upload",
         "picture:edit",
-        "picture:delete"
+        "picture:delete",
+        "proofing:view",
+        "proofing:manage"
       ],
-      "description": "查看图片、上传图片、修改图片、删除图片"
+      "description": "查看图片、上传图片、修改图片、删除图片，查看选择图片选单中的内容"
     },
     {
       "key": "admin",
@@ -54,9 +72,12 @@
         "picture:view",
         "picture:upload",
         "picture:edit",
-        "picture:delete"
+        "picture:delete",
+        "proofing:view",
+        "proofing:manage",
+        "proofing:close"
       ],
-      "description": "成员管理、查看图片、上传图片、修改图片、删除图片"
+      "description": "成员管理、查看图片、上传图片、修改图片、删除图片,管理选单"
     }
   ]
 }

@@ -1,6 +1,6 @@
 package com.sharkycake.KafkaTest;
 
-import com.sharkycake.config.KafkaTopicConfig;
+import com.sharkycake.picture.cleanup.config.KafkaTopicConfig;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.Config;
 import org.apache.kafka.clients.admin.NewTopic;

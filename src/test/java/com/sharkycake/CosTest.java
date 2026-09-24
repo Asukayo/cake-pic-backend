@@ -2,7 +2,7 @@ package com.sharkycake;
 
 
 import cn.hutool.core.util.StrUtil;
-import com.sharkycake.config.CosConfig;
+import com.sharkycake.infrastructure.cos.CosConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 

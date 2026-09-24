@@ -2,8 +2,8 @@ package com.sharkycake.cacheTest;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.sharkycake.model.entity.Picture;
-import com.sharkycake.service.PictureService;
+import com.sharkycake.picture.entity.Picture;
+import com.sharkycake.picture.service.PictureService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.RedisTemplate;

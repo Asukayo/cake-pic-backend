@@ -75,11 +75,15 @@ knife4j:
       default:
         api-rule: package
         api-rule-resources:
-          - com.sharkycake.controller
+          - com.sharkycake.user.controller
+          - com.sharkycake.space.controller
+          - com.sharkycake.picture.controller
+          - com.sharkycake.common.controller
 
 # 腾讯云 COS：建议改用环境变量注入，避免写入配置文件
 cos:
   client:
+    proofing-bucket: ${COS_PROOFING_BUCKET:<YOUR_PRIVATE_COS_BUCKET>}
     secret-id: ${COS_SECRET_ID:<YOUR_COS_SECRET_ID>}
     secret-key: ${COS_SECRET_KEY:<YOUR_COS_SECRET_KEY>}
     host: <YOUR_COS_BUCKET_HOST>

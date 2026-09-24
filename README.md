@@ -1,6 +1,6 @@
 # 🍰 Cake Pic · 照片墙与团队空间管理平台（后端）
 
-> 基于 Spring Boot 3 的图片分享与管理后端服务，提供用户体系、公共/团队空间、图片上传与管理、以图搜图、AI 扩图、在线协作编辑、空间统计分析等能力。
+> 基于 Spring Boot 2.6.13 的图片分享与管理后端服务，提供用户体系、公共/团队空间、图片上传与管理、以图搜图、AI 扩图、在线协作编辑、空间统计分析等能力。
 
 ## ✨ 核心功能
 
@@ -25,7 +25,7 @@
 
 | 分类 | 技术 |
 | --- | --- |
-| 框架 | Spring Boot 3、Spring MVC、Spring WebSocket |
+| 框架 | Spring Boot 2.6.13、Spring MVC、Spring WebSocket |
 | ORM / 数据库 | MyBatis-Plus、MySQL |
 | 缓存 / 中间件 | Redis（Redisson、Spring Session、缓存与分布式锁）、Kafka |
 | 认证鉴权 | Sa-Token（含自定义空间权限 StpInterface）、AOP 注解式权限校验 |
@@ -38,21 +38,14 @@
 
 ```text
 src/main/java/com/sharkycake
-├── annotation        # 权限校验注解 @AuthCheck
-├── aop               # 平台角色拦截器
-├── api               # 第三方服务门面（阿里云 AI、以图搜图）
-├── common            # 统一返回体 BaseResponse、分页 PageRequest
-├── config            # COS / Kafka / Redis / Sa-Token / 线程池等配置
-├── consumer          # Kafka 图片清理消费者
-├── controller        # HTTP 接口层
-├── exception         # 自定义业务异常与全局处理
-├── manager           # COS 管理、上传模板、空间权限、WebSocket + Disruptor
-├── mapper            # MyBatis-Plus 数据访问
-├── model             # entity / dto / vo / enums
-├── Schedule          # Outbox 投递与清理补偿定时任务
-├── service           # 业务接口与实现
-└── utils             # 通用工具
+├── user              # 用户、登录、平台角色权限
+├── space             # 空间、成员、空间权限、统计
+├── picture           # 图片、上传、协作编辑、清理任务与 Kafka 消费
+├── infrastructure    # COS、Redis、Outbox、第三方 API 等技术适配
+└── common            # 通用响应、请求、异常与健康检查
 ```
+
+模块归属和跨模块调用见 [模块结构说明](MODULES.md)。
 
 ## 🔁 亮点：Kafka 可靠删除链路
 
@@ -68,7 +61,7 @@ src/main/java/com/sharkycake
 
 ### 环境要求
 
-- JDK 17+
+- JDK 11+
 - Maven 3.6+
 - MySQL 8.x
 - Redis 6+

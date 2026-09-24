@@ -1,7 +1,7 @@
 package com.sharkycake.cacheTest;
 
-import com.sharkycake.model.entity.Picture;
-import com.sharkycake.service.PictureService;
+import com.sharkycake.picture.entity.Picture;
+import com.sharkycake.picture.service.PictureService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
