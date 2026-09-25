@@ -9,6 +9,7 @@ import com.sharkycake.proofing.dto.ProofingProjectUpdateRequest;
 import com.sharkycake.proofing.entity.ProofingProject;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.sharkycake.proofing.vo.ProofingProjectVO;
+import com.sharkycake.proofing.vo.ProofingSharedVO;
 
 import javax.servlet.http.HttpServletRequest;
 
@@ -40,4 +41,9 @@ public interface ProofingProjectService extends IService<ProofingProject> {
 
     ProofingProjectVO closeProject(Long projectId, ProofingProjectCloseRequest closeRequest,
                                     HttpServletRequest httpServletRequest);
+
+    /**
+     * 创建临时短链
+     */
+    ProofingSharedVO createSharingLink(Long projectId, HttpServletRequest httpServletRequest);
 }

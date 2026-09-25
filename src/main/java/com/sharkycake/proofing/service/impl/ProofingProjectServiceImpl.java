@@ -1,12 +1,13 @@
 package com.sharkycake.proofing.service.impl;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.Map;
-import java.util.Objects;
+import java.security.SecureRandom;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import cn.hutool.core.lang.UUID;
+import cn.hutool.crypto.digest.DigestUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -28,12 +29,15 @@ import com.sharkycake.proofing.service.ProofingItemService;
 import com.sharkycake.proofing.service.ProofingProjectService;
 import com.sharkycake.proofing.mapper.ProofingProjectMapper;
 import com.sharkycake.proofing.vo.ProofingProjectVO;
+import com.sharkycake.proofing.vo.ProofingSharedVO;
 import com.sharkycake.space.constant.SpaceUserPermissionConstant;
 import com.sharkycake.user.entity.User;
 import com.sharkycake.user.service.UserService;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.BeanWrapper;
 import org.springframework.beans.BeanWrapperImpl;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -80,20 +84,28 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
             "expectedVersion", v -> v instanceof Long && (Long) v >= 0
     );
 
+    private static final String PROOF_SHARING_PREFIX = "proofing:share:";
+    private static final SecureRandom SHARE_RANDOM = new SecureRandom();
 
+    @Value("${proofing.shareBaseUrl}")
+    private String shareBaseUrl;
     private final UserService userService;
     private final ProofingProjectAuthService proofingProjectAuthService;
     private final ProofingItemService itemService;
     private final ProofingAssetService assetService;
+    private final StringRedisTemplate redisTemplate;
+
 
     public ProofingProjectServiceImpl(UserService userService,
                                       ProofingProjectAuthService proofingProjectAuthService,
                                       ProofingItemService itemService,
-                                      ProofingAssetService assetService) {
+                                      ProofingAssetService assetService,
+                                      StringRedisTemplate redisTemplate) {
         this.userService = userService;
         this.proofingProjectAuthService = proofingProjectAuthService;
         this.itemService = itemService;
         this.assetService = assetService;
+        this.redisTemplate = redisTemplate;
     }
 
     /**
@@ -313,6 +325,40 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         project.setUpdateTime(new Date());
         ThrowUtils.throwIf(!this.updateById(project), ErrorCode.OPERATION_ERROR, "关闭选单失败");
         return toVo(project);
+    }
+
+    @Override
+    public ProofingSharedVO createSharingLink(Long projectId, HttpServletRequest httpServletRequest) {
+        // 参数校验
+        requireProjectId(projectId);
+        // 获取登陆者身份信息
+        User loginUser = userService.getLoginUser(httpServletRequest);
+        ProofingProject project = getById(projectId);
+        ThrowUtils.throwIf(project == null,ErrorCode.OPERATION_ERROR,"请求的项目不存在");
+        proofingProjectAuthService.requireSpacePermission(
+                project.getSpaceId(), loginUser, SpaceUserPermissionConstant.PROOFING_MANAGE);
+        // 检查当前行状态是否允许创建短链
+        String status = project.getStatus();
+        ThrowUtils.throwIf(status.equals(ProjectStatus.DRAFT.name())
+                ||  status.equals(ProjectStatus.CLOSED.name())
+                ,ErrorCode.OPERATION_ERROR,"当前状态不允许创建分享连接");
+        // 可以创建临时连接
+        // 前端页面地址 + publicId + 随机令牌
+        byte[] bytes = new byte[32];
+        SHARE_RANDOM.nextBytes(bytes);
+        // 生成唯一的token
+        String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        // 生成过期时间
+        Duration ttl = Duration.ofDays(7);
+        String key = PROOF_SHARING_PREFIX + projectId;
+        redisTemplate.opsForValue().set(key, DigestUtil.sha256Hex(token), ttl);
+        // 创建返回值
+        ProofingSharedVO vo = new ProofingSharedVO();
+        vo.setCreatedBy(loginUser.getId());
+        vo.setProjectId(projectId.toString());
+        vo.setExpireDate(Date.from(Instant.now().plus(ttl)));
+        vo.setShareUrl(shareBaseUrl + "/proofing/" + project.getPublicId() + "#token=" + token);
+        return vo;
     }
 
     private ProofingProject lockProject(Long projectId) {

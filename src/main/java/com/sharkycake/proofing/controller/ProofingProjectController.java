@@ -13,10 +13,7 @@ import com.sharkycake.proofing.service.ProofingAssetService;
 import com.sharkycake.proofing.service.ProofingItemService;
 import com.sharkycake.proofing.service.ProofingProjectService;
 import com.sharkycake.proofing.upload.ProofingPreviewUploadService;
-import com.sharkycake.proofing.vo.ProofingAssetAccessVO;
-import com.sharkycake.proofing.vo.ProofingItemVO;
-import com.sharkycake.proofing.vo.ProofingPreviewUploadVO;
-import com.sharkycake.proofing.vo.ProofingProjectVO;
+import com.sharkycake.proofing.vo.*;
 import com.sharkycake.user.entity.User;
 import com.sharkycake.user.service.UserService;
 import org.springframework.http.MediaType;
@@ -159,6 +156,19 @@ public class ProofingProjectController {
         return ResultUtils.success(proofingProjectService.publish(
                 id, publishRequest, httpServletRequest));
     }
+
+    @PostMapping("/{projectId}/share")
+    public BaseResponse<ProofingSharedVO> createdShared(@PathVariable Long projectId,
+                                                        HttpServletRequest httpServletRequest,
+                                                        HttpServletResponse httpServletResponse) {
+        // 签名 URL 是短期访问凭证，不让浏览器或代理缓存响应。
+        httpServletResponse.setHeader("Cache-Control", "no-store");
+        return ResultUtils.success(
+                proofingProjectService.createSharingLink(projectId,httpServletRequest)
+        );
+    }
+
+
 
     /**
      * 关闭选单
