@@ -3,6 +3,7 @@ package com.sharkycake.proofing.service;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.sharkycake.proofing.dto.ProofingProjectCloseRequest;
 import com.sharkycake.proofing.dto.ProofingProjectCreateRequest;
+import com.sharkycake.proofing.dto.ProofingProjectPublishRequest;
 import com.sharkycake.proofing.dto.ProofingProjectQueryRequest;
 import com.sharkycake.proofing.dto.ProofingProjectUpdateRequest;
 import com.sharkycake.proofing.entity.ProofingProject;
@@ -28,6 +29,14 @@ public interface ProofingProjectService extends IService<ProofingProject> {
 
     ProofingProjectVO updateDraft(Long projectId, ProofingProjectUpdateRequest updateRequest,
                                    HttpServletRequest httpServletRequest);
+
+    /** 从草稿中移除一张预览图，返回更新后的项目版本。 */
+    Long removeDraftItem(Long projectId, Long itemId, Long expectedVersion,
+                         HttpServletRequest httpServletRequest);
+
+    /** 校验图片数量后发布草稿选单。 */
+    ProofingProjectVO publish(Long projectId, ProofingProjectPublishRequest publishRequest,
+                              HttpServletRequest httpServletRequest);
 
     ProofingProjectVO closeProject(Long projectId, ProofingProjectCloseRequest closeRequest,
                                     HttpServletRequest httpServletRequest);

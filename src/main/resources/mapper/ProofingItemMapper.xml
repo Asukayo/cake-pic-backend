@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.sharkycake.proofing.mapper.ProofingItemMapper">
+
+    <resultMap id="BaseResultMap" type="com.sharkycake.proofing.entity.ProofingItem">
+            <id property="id" column="id" />
+            <result property="projectId" column="projectId" />
+            <result property="previewAssetId" column="previewAssetId" />
+            <result property="displayName" column="displayName" />
+            <result property="sortOrder" column="sortOrder" />
+            <result property="selected" column="selected" />
+            <result property="annotation" column="annotation" />
+            <result property="finalAssetId" column="finalAssetId" />
+            <result property="createTime" column="createTime" />
+            <result property="updateTime" column="updateTime" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,projectId,previewAssetId,displayName,sortOrder,selected,
+        annotation,finalAssetId,createTime,updateTime
+    </sql>
+</mapper>

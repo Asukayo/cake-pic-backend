@@ -1,8 +1,8 @@
 # 摄影团队在线选片与交付：开发手册
 
-> 先做第 1 阶段：创建选片单、查询详情、验证空间权限。不要同时开发全部功能。
+> 第二阶段的预览上传、清理、员工列表、签名访问、草稿移除和发布后端代码已写；用户决定暂缓真实数据库与私有 COS 验收，下一步进入第 3 阶段。不要同时开发全部功能。
 >
-> 版本：v1.0 · 2026-09-24。本文是待实现的开发设计，不代表功能已经完成。
+> 版本：v1.1 · 2026-09-25。本文是分阶段开发设计；代码完成情况以第 9 节和当前仓库为准。
 > 适用项目：当前 Cake Pic 后端；开发方式：你动手实现，按阶段检查代码与验证结果。
 >
 > 开发要求：优先完成当前阶段可运行、可验证的功能。只实现当前阶段验收必需的字段和功能，不为将来可能出现的需求提前扩展；权限、数据隔离和状态校验等当前功能必需的约束仍要落实。后续阶段需要新字段时再写迁移脚本。
@@ -51,7 +51,7 @@
 | 成片关系 | 一张已选照片对应一张成片；交付包创建前允许替换成片 |
 | 第一版规模 | 每单最多 300 张预览图，最多选 20 张；这只是产品限额，不是压测结论 |
 | 文件边界 | 输入 JPEG/PNG，每文件最多 20 MiB、解码后最多 4000 万像素；预览长边最多 1600 px |
-| 存储边界 | 每单逻辑存储限额 2 GiB，ZIP 上限 500 MiB；最多 20 个未关闭选片单/空间，先用于小规模试用 |
+| 存储边界 | 重编码预览不超过 2 MiB，ZIP 不超过 500 MiB；首版不做 2 GiB 精确配额或每空间 20 单额度 |
 
 预览图由后端解码、修正 EXIF 朝向后重编码生成，移除 EXIF 等元数据；选片阶段不把上传的原始大图提供给客户。预览与成片分别保存，不能通过把按钮隐藏来保护成片。
 
@@ -74,19 +74,23 @@ flowchart LR
 
 ### 2.1 已核对的当前源码
 
-以下是 2026-09-24 对工作区源码的静态核对，不是运行验收。工作区存在未提交的包结构重构，不要为了实现手册先覆盖、回退或提交这些改动。
+以下基于 2026-09-25 对工作区源码的核对；本阶段存在未提交改动，以第 9 节和当前源码为准。以后恢复开发仍须重新核对，保留届时用户未提交的代码。
 
 | 现有能力 | 入口 | 新功能如何使用 |
 | --- | --- | --- |
 | 用户登录 | [UserService](src/main/java/com/sharkycake/user/service/UserService.java) | 摄影师端继续使用现有登录机制 |
 | 团队角色 | [SpaceUserAuthManager](src/main/java/com/sharkycake/space/auth/SpaceUserAuthManager.java) | 从选片单所属空间解析当前成员身份 |
 | 图片上传参考 | [PictureUploadTemplate](src/main/java/com/sharkycake/picture/upload/PictureUploadTemplate.java) | 参考校验和临时文件处理；现有实现返回拼接 URL，不能原样作为私有交付链路 |
+| 原图库实体 | [Picture](src/main/java/com/sharkycake/picture/entity/Picture.java) | 已有 bucket/key 与图片元数据，但映射图库表；不能直接作为选单文件实体 |
 | COS SDK 封装 | [CosManager](src/main/java/com/sharkycake/infrastructure/cos/CosManager.java) | 参考上传、读取、删除方法；当前上传/读取使用配置中的固定桶 |
 | 通用响应 | [BaseResponse](src/main/java/com/sharkycake/common/BaseResponse.java) | 继续使用 `{code,data,msg}`，不要另起一套响应格式 |
 | Outbox 投递 | [OutboxMessagePublisher](src/main/java/com/sharkycake/infrastructure/outbox/jobs/OutboxMessagePublisher.java) | 后期发送交付打包事件；任务表、消费者和恢复逻辑单独设计 |
+| Kafka 默认死信处理 | [KafkaConsumerConfig](src/main/java/com/sharkycake/picture/cleanup/config/KafkaConsumerConfig.java) | 当前固定投递 `picture.cleanup.dlt`；新增 proofing 消费者前须按原 topic 路由至对应 DLT |
 | 原图库文件回收 | [PictureFileCleanupServiceImpl](src/main/java/com/sharkycake/picture/service/impl/PictureFileCleanupServiceImpl.java) | 当前只检查 `picture` 的对象引用，新模块不能借用相同对象 Key 后假定它会保留文件 |
 
 当前没有核对前端仓库。本文页面与请求是新增约定，前端路由和框架适配需由你在实现时完成。
+
+当前 `proofing` Java 代码已有项目、asset、item 的实体、Mapper、Service；项目 Controller、上传接口和权限入口已写，私有桶管理器有上传、删除、短时 GET 签名方法。asset、item 的建表脚本与生成映射已静态核对，用户报告两表已建；本次未连接数据库独立核对表结构。单张预览上传的非事务编排、三个短事务方法和事务外图片处理已写：新增 `metadata-extractor` 读取 EXIF 朝向，JDK ImageIO 解码、缩放、重编码为 JPEG 并生成摘要；COS 上传显式设置 `image/jpeg`。上传接口返回 item 标识与本次提交后的项目版本，不暴露 bucket/objectKey；multipart 单文件限 20 MiB、请求限 21 MiB。2026-09-25 编译成功，图片处理的 3 个定向测试通过；真实数据库、COS 和整条上传链路尚未验证。submission、delivery_task、分享会话和 ZIP Worker 均未实现。生成的 Asset Service 曾残留错误的 `generator.domain.ProofingAsset` 导入，已改为实际包名。
 
 AGENTS.md 提到的 `docs/kafka-integration-plan.md`、`docs/kafka-integration-context.md` 在本次工作区不存在；本文不补造其历史验证结果。后续若恢复 Kafka 教学，应先找到或补充真实上下文。
 
@@ -107,17 +111,25 @@ proofing/
   delivery/       第 5 阶段的打包消费者和恢复调度
 ```
 
-存储适配器建议放在 `infrastructure.cos.ProofingStorageManager`，配置独立私有桶，按 bucket/key 处理文件，不改动原图库的默认桶。
+`infrastructure.cos.ProofingStorageManager` 已存在，使用独立私有桶提供上传、删除和 GET 签名；后续在 proofing Service 中做项目与资产授权，不改动原图库的默认桶。
 
-新增 Mapper 后，更新 [MyBatisPlusConfig](src/main/java/com/sharkycake/infrastructure/persistence/MyBatisPlusConfig.java) 的 `@MapperScan`，加入 `com.sharkycake.proofing.mapper`；Mapper XML 仍放 `src/main/resources/mapper`。接口文档如使用包过滤，要实际检查新 Controller 是否出现。
+现有 [MyBatisPlusConfig](src/main/java/com/sharkycake/infrastructure/persistence/MyBatisPlusConfig.java) 已扫描 `com.sharkycake.proofing.mapper`；新增 Mapper 不必重复加扫描路径。Mapper XML 仍放 `src/main/resources/mapper`。接口文档如使用包过滤，要实际检查新 Controller 是否出现。
 
 ### 2.3 与原图库的数据边界
 
 首版的预览和成片直接在选片单上传，使用独立的 `proofing_asset` 记录及私有对象 Key。原图库仍可按原方式使用。
 
+`Picture` 已有图片大小、宽高、bucket 和对象 Key，所以复用不是技术上不可能；但它映射 `picture` 表，承担图库展示、搜索和审核，现有 `url` 非空且上传流程生成固定访问 URL。选片单还需记录尚未关联 item 的 STAGING 文件、FINAL 和非图片的 ZIP，并按项目授权签发短时 URL。原图库删除流程会扣空间额度，清理器只检查 `picture` 引用，不检查 `proofing_item`、确认快照和交付任务。为共用一张表修改这些既有流程，会扩大改动和误删风险。**保留薄的 `proofing_asset` 表，复用适用的图像校验、元数据处理与 COS 基础能力，不直接复用 `Picture` 实体或原上传/清理 Service。**
+
 不让选片单直接引用 `picture.originalKey`、`compressedKey` 或长期 URL。这样原图库删除照片不会损坏已确认的客户清单，也无需修改原来的删除引用模型。
 
 “从图库导入”放到后续：校验来源权限，复制为选片单自己的新对象，确认复制成功后再关联；`sourcePictureId` 最多作为来源记录，不能充当文件存续保证。
+
+### 2.4 2026-09-25 架构审查决策
+
+首版保留 item 与 asset 分离、不可变 submission、项目行锁与 expectedVersion、Redis 客户会话、私有桶与签名 URL、MySQL/COS 补偿、Kafka + Outbox，以及有 fencing token 的异步 ZIP 任务。这些设计对应实际业务边界，并须通过并发、故障注入和访问控制用例验证。
+
+收缩范围：submission 只保留业务所需五字段；asset 只保留 STAGING/READY/DELETE_PENDING 三态和简单清理；交付任务使用单一 CAS 领取与恢复入口；配额先用文件、像素、照片数和 ZIP 的硬限制。撤销时即时失效客户会话所需的 `shareVersion` 与每次项目状态查询继续保留。具体字段、失败边界和验证要求见第 4、7、8、10 节，不把设计决定写成已完成功能。
 
 ## 3. 状态与权限
 
@@ -138,7 +150,7 @@ DRAFT --发布--> SELECTING --客户确认--> CONFIRMED --发布交付--> DELIVE
 | `DELIVERED` | 查看交付结果、管理链接、关闭 | 查看确认清单、下载交付包 |
 | `CLOSED` | 查看内部记录 | 无法访问 |
 
-`CLOSED` 是业务关闭，不表示 COS 文件已经删除。首版不实现自动删除已关联文件；由小规模试用限额约束存储，正式长期运营前再补保留期与清理策略。
+`CLOSED` 是业务关闭，不表示 COS 文件已经删除。首版不自动删除已关联文件；以单文件、照片数和 ZIP 硬限制控制单次操作，并在试用期间观察私有桶占用。长期保留期和空间总额度不在本版实现。
 
 打包任务状态单独维护：`PENDING -> RUNNING -> SUCCEEDED / FAILED`。只有任务成功、全部成片完整，摄影师才能将项目从 `CONFIRMED` 改为 `DELIVERED`。
 
@@ -187,7 +199,7 @@ DRAFT --发布--> SELECTING --客户确认--> CONFIRMED --发布交付--> DELIVE
 
 下面是设计字段，不是已执行的 SQL。首版分阶段创建 5 张表，不能把未来设计写成数据库现状。
 
-沿用项目的 camelCase 数据库字段风格；主键用 BIGINT；业务 ID 在 JSON 响应中转换为字符串；时间统一存 UTC，接口使用带时区 ISO 8601。所有表至少有 `id/createTime/updateTime`。
+沿用项目的 camelCase 数据库字段风格；主键用 BIGINT；业务 ID 在 JSON 响应中转换为字符串；时间统一存 UTC，接口使用带时区 ISO 8601。可变表使用 `createTime/updateTime`；不可变 submission 以 `confirmedAt` 表示确认时间，不为了统一格式增加无业务用途的更新时间。
 
 首版不增加通用逻辑删除字段：项目用 `CLOSED`，草稿移除的明细可以物理删除；确认快照和交付任务保留。金额、支付、客户账号不在模型内。
 
@@ -208,7 +220,9 @@ DRAFT --发布--> SELECTING --客户确认--> CONFIRMED --发布交付--> DELIVE
 | `shareEnabled`, `shareExpiresAt` | BOOLEAN, DATETIME(3) | 初始禁用；最多设置未来 30 天，可轮换续期 |
 | `confirmedAt`, `deliveredAt`, `closedAt` | DATETIME(3), 可空 | 关键业务时间 |
 
-索引：`UNIQUE(publicId)`；`INDEX(spaceId,status,createTime)`。配额计算可在持有项目行锁时汇总本项目资产，首版不增加易漂移的缓存计数。
+索引：`UNIQUE(publicId)`；`INDEX(spaceId,status,createTime)`。首版不实现 2 GiB 精确逻辑存储配额，也不增加易漂移的缓存计数。分享字段到阶段 3 再以 ALTER 迁移加入已存在的项目表。
+
+现有 `create_proofing_project.sql` 的 `spaceId` 注释只写“团队空间”，与已支持 PRIVATE 和 TEAM 的鉴权规则不符；这是注释偏差，不代表需要更改现有数据归属。
 
 ### 4.3 `proofing_item`：照片与选片草稿
 
@@ -234,14 +248,13 @@ DRAFT --发布--> SELECTING --客户确认--> CONFIRMED --发布交付--> DELIVE
 | `bucket`, `objectKey` | VARCHAR(128), VARCHAR(512) | 服务端生成并控制，不能由客户任意指定 |
 | `sizeBytes`, `sha256` | BIGINT, CHAR(64) | 字节大小与校验摘要；未完成上传时摘要可空 |
 | `width`, `height`, `contentType` | INT, INT, VARCHAR(64) | 尺寸只对图片有效，使用实际解码结果 |
-| `status`, `expiresAt` | VARCHAR(24), DATETIME(3) | `STAGING/READY/DELETE_PENDING/DELETED`；STAGING 有时限 |
-| `attemptToken` | VARCHAR(64) | 区分上传或打包的执行批次 |
+| `status`, `expiresAt` | VARCHAR(24), DATETIME(3) | `STAGING/READY/DELETE_PENDING`；STAGING 有时限，READY 不需要过期时间 |
 
 索引：`UNIQUE(bucket,objectKey)`，Key 索引使用区分大小写的字符集/排序规则；`INDEX(projectId,status)`、`INDEX(status,expiresAt)`。
 
 关联只接受同项目、类型匹配、READY 的资产。Key 每次上传唯一，禁止覆盖已有文件；同一资产不能被跨项目复用。
 
-保存预览成功时，同事务写/关联 item；保存成片成功时，同事务更新 item.finalAssetId。失败或过期执行留下的 Key 只能清理，不能重新变成 READY。第 7 节说明数据库与 COS 间的处理顺序。
+保存预览成功时，同事务写/关联 item；保存成片成功时，同事务更新 item.finalAssetId。失败或过期执行留下的 Key 只能清理，不能重新变成 READY。每次上传或打包尝试生成不同的对象 Key，asset 不存 attemptToken；交付任务的 fencing token 留在 delivery_task。第 7 节说明数据库与 COS 间的处理顺序。
 
 ### 4.5 `proofing_submission`：不可变确认快照
 
@@ -249,17 +262,14 @@ DRAFT --发布--> SELECTING --客户确认--> CONFIRMED --发布交付--> DELIVE
 | --- | --- | --- |
 | `id`, `projectId` | BIGINT | `UNIQUE(projectId)`，一单只确认一次 |
 | `requestId` | VARCHAR(64), ascii_bin | 客户端为一次确认生成 UUID；网络重试保持不变 |
-| `confirmedVersion` | BIGINT | 本次确认形成的项目版本 |
-| `selectionCount` | INT | 快照中的照片数 |
 | `manifestJson` | JSON | 有序列表：itemId、displayName、previewAssetId、预览宽高、selected=true、annotation |
-| `manifestHash` | CHAR(64) | 对确定顺序和固定序列化规则的清单字节计算 SHA-256 |
 | `confirmedAt` | DATETIME(3) | 服务端确认时间 |
 
 确认事务：锁项目 → 验证客户权限 → 检查已有 submission → 检查状态和版本 → 读取已选项并校验上限/批注 → 写快照 → 改为 CONFIRMED 并递增版本 → 提交。
 
 确认重试时，先检查当前客户仍有访问权。如果相同 requestId 已成功，返回原快照，不再次写入；不同 requestId 已确认则返回 ALREADY_CONFIRMED 并允许前端读取已有清单。身份验证不能因为“幂等命中”而跳过。
 
-后续修图列表从 submission 获取，不重新拼装可变草稿。manifestHash 是完整性检查工具，不是客户身份签名或法律效力证明。
+后续修图列表从 submission 获取，不重新拼装可变草稿。确认响应中的数量可由最多 20 项的 `manifestJson` 得出；接口不承诺返回历史项目版本，因此不存 `confirmedVersion` 或 `selectionCount`。清单与其摘要若同存一个数据库，没有独立可信来源；`manifestHash` 不提供客户身份或防篡改证明，故不存。交付阶段逐文件校验 asset 的 SHA-256，解决的是实际文件内容完整性。
 
 ### 4.6 `proofing_delivery_task`：交付包任务
 
@@ -270,11 +280,11 @@ DRAFT --发布--> SELECTING --客户确认--> CONFIRMED --发布交付--> DELIVE
 | `status` | VARCHAR(16) | PENDING/RUNNING/SUCCEEDED/FAILED |
 | `inputManifestJson` | JSON | 固定 itemId、finalAssetId、bucket/key、sizeBytes、sha256 和 ZIP 文件名 |
 | `attempt`, `attemptToken` | INT, VARCHAR(64) | 执行次数和当前执行令牌 |
-| `leaseUntil`, `nextRetryAt` | DATETIME(3), 可空 | 运行租约和最早重试时间 |
+| `leaseUntil` | DATETIME(3), 可空 | 当前 RUNNING 执行的租约终点 |
 | `outputAssetId` | BIGINT, 可空 | 成功生成的 READY ZIP |
 | `lastError` | VARCHAR(1000), 可空 | 可读失败摘要；不包含令牌、完整签名链接或密钥 |
 
-索引：`UNIQUE(eventId)`、`INDEX(status,nextRetryAt)`、`INDEX(status,leaseUntil)`。
+索引：`UNIQUE(eventId)`、`INDEX(status,leaseUntil)`；该复合索引也支持按状态查 PENDING。Outbox 表已有自己的 `nextRetryTime`，交付任务不再建 `nextRetryAt` 重试时钟。
 
 创建任务前验证所有已选项都有 READY 成片，固定 inputManifest，并冻结成片关联。任务失败只重试同一输入；首版不允许在已有交付任务下替换成片。必须换片时新建选片单，后续再设计交付修订版本。
 
@@ -455,29 +465,29 @@ JSON 示例是拟定契约，供开发时对齐，尚不是可调用接口：
 对象 Key 由服务端生成，例如 `proofing/{projectId}/{kind}/{randomId}.jpg`。不把用户文件名直接用于目录或权限判定。首版使用后端接收文件再上传 COS；不开放客户端任意 Key 的直传接口。
 
 1. 先检查登录、项目权限和状态；文件写受限临时目录，限制请求体、像素数、格式和处理超时。
-2. 在事务外完成图片解码/预览生成，得到实际文件大小；开短事务锁项目，重新校验版本、资产数量和存储配额，登记 STAGING 资产及 15 分钟有效期，提交。
+2. 在事务外完成图片解码/预览生成，得到实际文件大小；开短事务锁项目，重新校验版本、照片数量与文件硬限制，登记 STAGING 资产及晚于上传超时的清理时间，提交。
 3. 事务外上传唯一 Key；成功后开短事务锁项目，重新校验身份、状态、版本和该资产 STAGING 资格，更新 READY 并关联 item，同事务递增项目版本。
-4. 关联失败时保留记录并标记 DELETE_PENDING；关闭文件流，在 finally 删除本地临时文件。不能把“COS 上传成功”直接当成整个业务成功。
+4. COS 明确返回上传成功，但关联失败时，在独立的短事务中标记 DELETE_PENDING；COS 请求异常时结果可能不确定，保留 STAGING 记录等到期扫描。关闭文件流，在 finally 删除本地临时文件。不能把“COS 上传成功”直接当成整个业务成功。
 
-所有上传使用有界线程池/连接池与明确超时。STAGING 资产暂按实际待上传字节占用逻辑配额，READY 按实测大小占用，DELETE_PENDING 在对象确认删除前仍占用；DELETED 不占用。
+所有上传使用有界线程池/连接池与明确超时。首版不计算 STAGING、READY、DELETE_PENDING 的精确逻辑存储配额；仍记录实测 `sizeBytes`，供文件校验、ZIP 输入和私有桶用量排查。
 
 数量预留也要计算未完成 STAGING：预览上传时将“已有 item 数＋未过期的待关联 PREVIEW 资产数”作为 300 张上限的占用，最终关联时在同一事务释放预留并增加明细。只有最终关联成功才消耗新的业务版本，单纯上传失败不会改变客户草稿。
 
-图片预览在重编码后应不超过 2 MiB，超出则继续压缩或拒绝，不能无限循环。首版最终文件只接受 JPEG/PNG，zip 不从外部上传。ZIP 预计预留“输入总大小 + 5 MiB”，实际超出 500 MiB 就失败，不上传超限结果。
+图片预览在重编码后应不超过 2 MiB，超出则继续压缩或拒绝，不能无限循环。首版最终文件只接受 JPEG/PNG，ZIP 不从外部上传。创建 ZIP 前按“输入总大小 + 5 MiB”估算本地临时空间，实际输出超出 500 MiB 就失败，不上传超限结果。
 
-每个限额检查都在项目行锁内进行，包括最多 300 个预览、20 个选中项和 2 GiB 资产预算。空间未关闭项目数的 20 单上限，在创建事务中由空间 Service 锁定所属空间行后检查；不要在 Controller 先查数量再插入。
+最多 300 个预览及 20 个选中项必须在项目行锁内检查；单文件大小、解码像素和 ZIP 上限在处理入口与处理过程中检查。暂不实现 2 GiB 资产预算或每空间 20 个未关闭项目限制。取消存储计费不等于取消 STAGING 对 300 张数量上限的预留。
 
 上传传输过程中不锁住项目，最终关联可能因其他人操作而冲突；这属于正常失败路径，前端提示刷新后重传，后台回收孤立资产。
 
 ### 7.3 清理边界
 
-新模块只清理自己的 STAGING 超时、DELETE_PENDING 以及无有效关联的上传/打包残留，不能调用旧图片清理器假定其了解新表。清理前同样锁项目并检查 item、submission、delivery input/output 的引用，标记不可再关联后才执行 COS 删除。
+新模块只清理自己的过期 STAGING、DELETE_PENDING 和无有效关联的上传/打包残留，不能调用旧图片清理器假定其了解新表。当前预览上传阶段先做一条简单链路：批量扫描过期的 PREVIEW/STAGING，按 `id + kind=PREVIEW + status=STAGING` 条件更新为 DELETE_PENDING；COS 已明确上传成功但关联失败，也可立即标记 DELETE_PENDING；COS 请求异常且结果不确定时，保留 STAGING 等待到期。`completePreview` 在同一事务中插入 item 并将资产从 STAGING 改为 READY，两种状态更新竞争时只能成功一方，因此这一条预览清理路径无需额外查询 item。DELETE_PENDING 已表示可以清理，在事务外删除对应 COS 对象，成功后条件删除资产记录；失败保留记录供定时任务重试。后续实现 FINAL/ZIP 时，再按实际引用补检查，不预先编写未来表的清理规则。
 
-删除对象成功后再标 DELETED；删除失败记录原因并重试。超时执行者可能迟到写出对象，因此需要周期核对旧执行批次的对象残留，不能只扫描一次就宣称无孤立文件；保存 tombstone 与 Key 供重复核对。用服务端生成的限定前缀、项目归属和确定 Key 执行删除。
+对象删除成功后可按状态条件物理删除资产记录；重复调用删除同一 Key 应安全。当前 proofing 专用 COS 客户端设置了 5 分钟请求超时，STAGING 预留 1 小时，过期扫描负责判断是否进入 DELETE_PENDING，清理方法不再额外等待 10 分钟。失败保留记录并更新重试顺序。每次尝试的 Key 不复用，过期 STAGING 不得重新转 READY。首版不建 DELETED、tombstone、asset.attemptToken 或旧批次反复扫描平台。迟到 COS 写入仍有残留风险，不能宣称绝无孤儿对象；试用时核对私有桶用量，并用“上传成功但数据库关联失败”“进程中断”验证补偿清理。
 
 替换尚未冻结的成片后，旧资产进入上述待清理流程；创建任务后禁止替换，使打包输入引用稳定。已关联的预览、确认清单及成功交付文件在首版关闭后继续保留。
 
-2 GiB 是逻辑预算，传输中残留和延迟清理可能使实际 COS 占用短时更高；试用时同时查看桶实际用量。正式长期开放前，需要补充已关闭项目保留期、清理和空间总存储额度策略。
+首版的文件硬限制不能代替长期总存储控制；试用时查看私有桶实际占用。已关闭项目保留期及空间总额度待有真实运营需求时再设计。
 
 ### 7.4 客户可访问的资产白名单
 
@@ -496,11 +506,9 @@ JSON 示例是拟定契约，供开发时对齐，尚不是可调用接口：
 
 客户数据接口设置 `Cache-Control: no-store`，对象访问避免公共 CDN 缓存；缩略图加载失败可申请新短链。下载采用 SDK 支持的响应头控制文件名，避免把客户输入直接拼进响应头。
 
-### 7.5 小规模试用的限流
+### 7.5 小规模试用的请求边界
 
-会话交换按来源 IP 限速（示例 30 次/分钟），同时按 publicId 限速（示例 60 次/分钟）；写操作按项目和会话限速（示例 120 次/分钟），签发短链每会话 120 次/分钟。计数要原子更新并带过期时间，阈值可依据真实试用调整。
-
-代理后的来源 IP 只接受可信代理设置，不能直接信任任意 `X-Forwarded-For`。限流失败不能影响已保存的选择，界面保留待保存批注。
+首版先执行请求体、文件、像素、照片数和 ZIP 的硬限制，不自行实现 IP/publicId/session/project 多维业务 limiter。2026-09-25 的仓库核对未发现可直接复用的 Gateway、Sentinel 或 Nginx 限流配置；若对公网开放试用，先确认实际部署入口是否有简单限流能力，再根据真实流量决定是否增加单一入口的会话交换限速。取得来源 IP 时只信任已配置的代理，不能直接采信任意 `X-Forwarded-For`。
 
 ## 8. 成片打包与失败恢复
 
@@ -518,35 +526,35 @@ JSON 示例是拟定契约，供开发时对齐，尚不是可调用接口：
 
 数据库任务是事实来源，消息只是处理触发。消费者从任务表读取固定输入，不接受消息里任意对象地址；不要把含照片、成片链接的巨大清单塞进 Kafka。
 
+现有 Outbox 发布器可按 topic 投递，沿用 `message_outbox` 表和发布器即可；同一消息可能重复投递，消费者依赖任务状态与 CAS 幂等。现有默认 Kafka 错误处理器把所有失败消息固定转到 `picture.cleanup.dlt`，新增 proofing listener 前只做必要的按源 topic 路由 DLT 修改，并新增 `proofing.delivery.dlt`，不重写原图片删除链路。Outbox 停止自动重试时任务仍保持 PENDING，恢复扫描可按任务事实来源领取；Outbox 失败记录仍需人工查看。
+
 ### 8.2 创建与执行
 
 1. 创建：锁项目，检查权限/CONFIRMED/已确认清单与全部成片，写 PENDING 任务和 Outbox，同一 MySQL 事务提交；返回 taskId。
-2. 抢占：按任务状态和 nextRetryAt 条件更新为 RUNNING，增加 attempt，生成 attemptToken，设置 leaseUntil；提交后才读取文件。
-3. 执行：逐个流式读取固定成片并校验摘要，写有大小限制的本地临时 ZIP，登记输出 STAGING 资产，上传到私有 COS。
-4. 完成：锁项目和任务，以 RUNNING＋attemptToken 为条件写成功与 READY outputAssetId；若项目已 CLOSED 或执行资格已过期，不能发布输出，将残留资产转清理流程。
+2. 抢占：消费者或恢复任务以条件更新领取 PENDING 或租约已过期的 RUNNING，更新为 RUNNING、`attempt++`、新 `attemptToken` 和 `leaseUntil`；提交后才读取文件。FAILED 只由有权限的员工发起人工重试。
+3. 执行：逐个流式读取固定成片并校验摘要，写有大小限制的本地临时 ZIP；为每次执行生成不同的 ZIP 对象 Key，登记输出 STAGING 资产，上传到私有 COS。
+4. 完成：锁项目和任务，以 `status=RUNNING AND attemptToken=?` 条件在同一事务发布 READY 资产与 `outputAssetId`；若项目已 CLOSED 或令牌已失效，不发布输出，将残留资产转清理流程。失败回写也必须带当前令牌。
 5. 交付：摄影师查看成功状态后点击“发布交付”，短事务改项目为 DELIVERED；客户此后才能拿到 ZIP 访问授权。
 
 ZIP 条目使用服务端生成的 `001_<itemId>.jpg` 等稳定名称，扩展名来自已验证格式；可附 `manifest.json`，记录 itemId 与原展示名称映射，内容限当前确认清单。禁止把文件路径、bucket/key、凭证或内部错误放入包中。
 
-不要 `readAllBytes` 把整批图片装进内存。临时空间要覆盖预估 ZIP 和当前处理文件，有界队列满时留任务为待处理；首版每实例最多 1 个打包任务即可。
+不要 `readAllBytes` 把整批图片装进内存。临时空间要覆盖预估 ZIP 和当前处理文件，有界队列满时留任务为待处理；首版每实例最多 1 个打包任务即可。设置明确的 COS I/O 与 Worker 执行超时，并使租约长于实测和配置的执行上限；不能未经验证就固定为五分钟。
 
 ### 8.3 重复、失败与恢复
 
 | 情况 | 预期处理 |
 | --- | --- |
-| 相同消息重复到达 | 成功任务直接结束；未到期 RUNNING 不再执行；其余状态用条件更新争抢 |
+| 相同消息重复到达 | SUCCEEDED 或 FAILED 直接结束；未到期 RUNNING 不再执行；PENDING 与过期 RUNNING 仅一个执行者能通过 CAS |
 | 读取 COS、校验或压缩失败 | 按当前 attemptToken 写 FAILED，保存简短原因，释放资源 |
-| 进程中断 | RUNNING 租约到期后，由恢复任务推进重试；旧执行者不能覆盖新结果 |
+| 进程中断 | RUNNING 租约到期后，由恢复任务用新 token 领取；旧执行者不能覆盖数据库结果或新对象 Key |
 | 上传 ZIP 成功但回写数据库失败 | 新一轮执行可重建；旧 Key 作为孤立对象回收，不能直接标交付成功 |
 | Kafka 不可用或 Outbox 达到停止重试状态 | 员工看到 PENDING；数据库恢复扫描仍可触发任务；Outbox 失败另行记录和修复 |
 
-建议租约 5 分钟，每 30 秒续租；抢占、续租、完成、失败更新都带 attemptToken。恢复调度每分钟扫描到期 RUNNING、到期 PENDING 和可自动重试 FAILED，与消费者调用同一个“尝试领取任务”服务，避免两套执行规则。
-
-自动最多执行 3 次，失败后按 1 分钟、5 分钟退避；耗尽后保持 FAILED，员工可手动重试。手动重试需要有效权限和版本，且同一任务至少间隔 60 秒；恢复同一固定输入，重置本轮自动次数，仍使用新的 attemptToken。
+首版只设一个恢复调度：扫描 PENDING 和 `leaseUntil < now` 的 RUNNING，与 Kafka 消费者调用同一个 CAS 领取方法。异常失败写 FAILED，由有权限的员工手动重试同一固定输入；崩溃导致的过期 RUNNING 可自动重新领取，达到有限尝试次数后写 FAILED，防止无限重复。无需 `nextRetryAt`、30 秒心跳、分档自动退避或多套恢复入口。若无法可靠限制 ZIP 执行时间，应保留一个简单的按 token 续租动作；否则固定租约可能导致重复执行，虽由 fencing 保证结果正确，仍会浪费计算与存储。
 
 ACK 表示消息已转交给持久化任务处理规则：只有数据库状态已经可靠更新或确认任务已存在并由恢复扫描覆盖时才 ACK；数据库不可用时不能吞异常后 ACK。新消费者的错误处理配置需单独验证，不能假定原删除消费者配置自动适配。
 
-关闭项目后不领取新任务；运行中的任务在续租和完成时发现 CLOSED 就停止/丢弃输出，已上传残留进入清理。后台任务不重新依赖创建者仍是空间所有者或团队成员，但客户访问和员工操作始终检查当前权限。
+关闭项目后不领取新任务；运行中的任务在完成前检查 CLOSED 并丢弃输出，已上传残留进入清理。后台任务不重新依赖创建者仍是空间所有者或团队成员，但客户访问和员工操作始终检查当前权限。
 
 恢复扫描遇到 CLOSED 项目时，将尚未结束的任务按执行令牌条件标为 FAILED，原因记录 PROJECT_CLOSED，禁止自动或人工重试；已经 SUCCEEDED 的任务保留记录，但客户不再获得访问授权。
 
@@ -554,17 +562,17 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 
 ### 9.1 总览与当前进度
 
-估时按“你熟悉当前项目、依赖服务可用、已有前端能扩展、边学边实现”计算，为专注开发时间。总计约 **48～76 小时**，包含最后 6～10 小时集中验收；不含云账号开通、寻找试用用户和不相关环境修复。
+估时按“你熟悉当前项目、依赖服务可用、已有前端能扩展、边学边实现”计算，为专注开发时间。下表沿用初版阶段估时，2026-09-25 缩减清理、调度与配额设计后尚未重新计时；不把估时当作已验证进度。
 
 | 阶段 | 用时估计 | 可见成果 | 代码状态 | 验证状态 |
 | --- | --- | --- | --- | --- |
 | 1. 项目与空间权限 | 4～6 小时 | 空间所有者或团队成员能按权限创建并查看选片单 | 后端代码已写：创建、按空间分页列表、详情、仅 DRAFT 修改、关闭；修改与关闭锁项目行并检查版本。列表兼容 `page` 参数并校验继承的 `current` 字段。用户报告已执行建表 | 2026-09-24 独立输出目录离线编译和 `page=2` 参数绑定手动验证通过；JUnit 测试因本机未缓存 Surefire JUnit 平台而未执行。用户报告创建、列表、详情、草稿修改、旧版本冲突、关闭及越权请求均已完成；未留存具体响应与数据库记录，简单前端页面未确认 |
-| 2. 私有预览与发布 | 10～16 小时 | 可上传、浏览预览并发布选片 | 进行中：私有桶配置和 ProofingStorageManager 的单文件上传、删除、GET 短时签名方法已写；资产与明细表尚未建 | 2026-09-24 独立输出目录离线编译通过；云端私有访问、签名链接和上传业务尚未验收 |
+| 2. 私有预览与发布 | 10～16 小时 | 可上传、浏览预览并发布选片 | 后端接口已写：私有桶管理器、asset/item 两张表和生成类，预览上传、员工 item 分页列表、授权签名访问、草稿图片移除、DRAFT→SELECTING 发布和资产清理；用户报告已建表。员工页面未确认 | 编译成功；图片处理 3 个定向测试通过。列表、签名访问、草稿移除、发布和清理代码仅通过编译；实际数据库结构、真实 COS 上传/删除、整条上传链路、并发与权限场景仍未验证 |
 | 3. 分享与客户选片 | 8～12 小时 | 客户能访问指定单并在上限内选片 | 未开始 | 未验证 |
 | 4. 批注与固定清单 | 8～12 小时 | 客户确认，摄影师看到固定修图清单 | 未开始 | 未验证 |
 | 5. 成片与交付包 | 12～20 小时 | 成片上传、打包、发布与客户下载 | 未开始 | 未验证 |
 
-**当前下一步：**按 4.4 节编写 `create_proofing_asset.sql`，先建 STAGING/READY 文件记录和唯一 `(bucket,objectKey)` 约束；之后建 item 表并接单张预览上传。匿名访问拒绝与短时签名 URL 可用性放到预览接口完成时一起验收。后面四张表按需要加入。
+**当前下一步：**按用户决定先进入第 3 阶段，从单项目分享令牌换 Redis 客户会话开始。第二阶段的真实数据库/COS 上传、授权看图、草稿移除、发布、私有桶匿名拒绝、失败清理和并发边界仍待验收；员工页面未确认，不把代码已写记为阶段验收通过。[第二阶段流程图](PROOFING-STAGE2-FLOW.md)可用于复习。
 
 建表脚本建议分别保存为 `src/main/resources/sql/create_proofing_project.sql`、`create_proofing_asset.sql`、`create_proofing_item.sql`、`create_proofing_submission.sql`、`create_proofing_delivery_task.sql`。文件按阶段创建，并在专用测试库检查实际结构；已有数据库的后续变更另写 ALTER 迁移，不能以 `CREATE TABLE IF NOT EXISTS` 当作自动升级。
 
@@ -589,16 +597,18 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 
 **本阶段只回答：客户将看到什么文件，文件是否真的受保护？**
 
+代码流程与事务边界见[第二阶段 Mermaid 流程图](PROOFING-STAGE2-FLOW.md)。
+
 1. 配置独立私有桶并新增 ProofingStorageManager；沿用现有 COS 客户端凭证，不改图库默认桶。
 2. 建 asset、item 表，先完成单张上传：解码、朝向修正、缩放、去元数据、STAGING → READY → 关联。
-3. 做分页预览、短链访问与草稿移除，补上超时/失败资产的受控清理与配额检查。
+3. 做员工分页预览、授权后的短时签名访问与草稿移除，补上超时/失败资产的受控清理和照片数量预留；客户分享链接在阶段 3 实现。
 4. 实现发布和冻结预览，补员工页面；模拟上传过程中另一个请求发布，验证迟到上传不能修改已发布单。
 
-**完成证据：**原始 URL 匿名 GET 被拒绝；有效短链能看预览；已发布后不能换预览或改上限；失败上传没有留下可被客户访问的明细。
+**完成证据：**COS 私有对象匿名 GET 被拒绝；有权限的员工能取得短时签名 URL 看预览；已发布后不能换预览或改上限；失败上传没有留下可被访问的明细。
 
 **容易卡住：**继续返回旧图库的 host+key URL；只校验后缀却未解码；COS 成功而数据库失败时没有资产记录。
 
-**第一小步（约 20 分钟）：**写 `create_proofing_asset.sql`，让每次上传先有一条可追踪的 STAGING 记录；按 4.4 节保留文件 Key、状态、过期时间及后续清理所需字段。预览接口完成时统一验证匿名拒绝与签名访问。
+**当前记录：**单张上传接口、PREVIEW 资产清理任务、员工 item 分页列表、短时签名访问、草稿图片移除和选单发布已写并编译，图片处理 3 个定向测试通过。真实数据库与私有 COS 验收按用户决定延后，不记为通过。
 
 ### 9.4 阶段 3：分享与客户选片
 
@@ -636,7 +646,7 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 
 1. 先做单张成片上传/关联和完整性检查；不齐成片时明确指出缺哪些 item。
 2. 建 delivery_task，完成“创建任务＋Outbox”事务与固定输入；先用一组 3 张小图调试打包核心函数。
-3. 接消费者和恢复调度，补条件抢占、attemptToken、租约、重试、孤立文件处理与有界资源限制。
+3. 接消费者和一个恢复调度，补 CAS 抢占、attemptToken、租约、PENDING/过期 RUNNING 恢复、人工重试、残留清理与有界资源限制。
 4. 做员工发布交付和客户 ZIP 访问，验证分享授权、ZIP 内容及任务失败重试。
 5. 完成第 10 节验收，录制演示，保存使用反馈，再更新 README 与简历。
 
@@ -706,8 +716,8 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 
 | 编号 | 操作 | 通过条件 |
 | --- | --- | --- |
-| R01 | COS 上传成功后让数据库回写失败 | 不产生可访问的错误明细；对象可由残留核对流程发现并回收 |
-| R02 | 打包中终止进程，重启并等待租约/恢复扫描 | 任务可恢复，只有一个有效输出；记录实际恢复时间 |
+| R01 | COS 上传成功后让数据库回写失败 | 不产生可访问的错误明细；留下 DELETE_PENDING 并由定时清理重试；记录可能的迟到写入边界 |
+| R02 | 打包中终止进程，重启并等待租约/恢复扫描 | 任务可恢复，只有当前 attempt 的输出可发布；记录实际恢复时间 |
 | R03 | Kafka 暂停、Redis 不可用、下载签名过期 | 任务持久化可恢复；客户鉴权失败时不放行；可重新申请有效下载链接 |
 | R04 | 伪装扩展名、超大像素、过大文件、不合法坐标或 HTML 批注 | 非法图片/坐标拒绝；文字按纯文本显示；临时资源释放 |
 | R05 | 读取一张被破坏的成片，或生成超限 ZIP | 整体任务失败，不能以缺失文件的 ZIP 标成功 |

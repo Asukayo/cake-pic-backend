@@ -29,6 +29,7 @@ spring:
   servlet:
     multipart:
       max-file-size: 20MB
+      max-request-size: 21MB
   # Kafka：图片可靠删除链路
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094}

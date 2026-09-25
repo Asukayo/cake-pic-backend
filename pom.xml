@@ -87,6 +87,12 @@
             <artifactId>hutool-all</artifactId>
             <version>5.8.38</version>
         </dependency>
+        <!-- 只读取上传图片的 EXIF 朝向；预览由 ImageIO 重新编码，不保留原始元数据。 -->
+        <dependency>
+            <groupId>com.drewnoakes</groupId>
+            <artifactId>metadata-extractor</artifactId>
+            <version>2.21.0</version>
+        </dependency>
 
         <!-- 数据库： 引入plus starter后不需要再加mybatis starter-->
         <dependency>

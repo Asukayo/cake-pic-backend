@@ -16,10 +16,15 @@ import com.sharkycake.common.exception.ThrowUtils;
 import com.sharkycake.proofing.auth.ProofingProjectAuthService;
 import com.sharkycake.proofing.dto.ProofingProjectCloseRequest;
 import com.sharkycake.proofing.dto.ProofingProjectCreateRequest;
+import com.sharkycake.proofing.dto.ProofingProjectPublishRequest;
 import com.sharkycake.proofing.dto.ProofingProjectQueryRequest;
 import com.sharkycake.proofing.dto.ProofingProjectUpdateRequest;
+import com.sharkycake.proofing.entity.ProofingAsset;
+import com.sharkycake.proofing.entity.ProofingItem;
 import com.sharkycake.proofing.entity.ProofingProject;
 import com.sharkycake.proofing.enums.ProjectStatus;
+import com.sharkycake.proofing.service.ProofingAssetService;
+import com.sharkycake.proofing.service.ProofingItemService;
 import com.sharkycake.proofing.service.ProofingProjectService;
 import com.sharkycake.proofing.mapper.ProofingProjectMapper;
 import com.sharkycake.proofing.vo.ProofingProjectVO;
@@ -43,7 +48,9 @@ import javax.servlet.http.HttpServletRequest;
 public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMapper, ProofingProject>
     implements ProofingProjectService{
 
-
+    /**
+     * 根据不同的dto运行不同的断言规则
+     */
     private static final Map<String, Predicate<Object>> CREATE_RULES = Map.of(
             "spaceId", v -> v instanceof Long && (Long) v > 0,
             "title", v -> v instanceof String
@@ -76,11 +83,17 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
 
     private final UserService userService;
     private final ProofingProjectAuthService proofingProjectAuthService;
+    private final ProofingItemService itemService;
+    private final ProofingAssetService assetService;
 
     public ProofingProjectServiceImpl(UserService userService,
-                                      ProofingProjectAuthService proofingProjectAuthService) {
+                                      ProofingProjectAuthService proofingProjectAuthService,
+                                      ProofingItemService itemService,
+                                      ProofingAssetService assetService) {
         this.userService = userService;
         this.proofingProjectAuthService = proofingProjectAuthService;
+        this.itemService = itemService;
+        this.assetService = assetService;
     }
 
     /**
@@ -115,6 +128,9 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         return toVo(proofingProject);
     }
 
+    /**
+     * 查询多个选单项目
+     */
     @Override
     public Page<ProofingProjectVO> listProjects(ProofingProjectQueryRequest queryRequest,
                                                 HttpServletRequest httpServletRequest) {
@@ -135,6 +151,9 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         return result;
     }
 
+    /**
+     * 查询特定的选单项目
+     */
     @Override
     public ProofingProjectVO getProject(Long projectId, HttpServletRequest httpServletRequest) {
         requireProjectId(projectId);
@@ -144,22 +163,29 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         return toVo(project);
     }
 
+    /**
+     * 更新选选单
+     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ProofingProjectVO updateDraft(Long projectId, ProofingProjectUpdateRequest updateRequest,
                                           HttpServletRequest httpServletRequest) {
+        // 参数校验
         requireProjectId(projectId);
         validateDto(updateRequest, UPDATE_RULES);
         ThrowUtils.throwIf(updateRequest.getTitle() == null && updateRequest.getSelectionLimit() == null,
                 ErrorCode.PARAMS_ERROR, "至少填写一项修改内容");
+        // 查看当前用户是否有修改project信息的权限
         User loginUser = userService.getLoginUser(httpServletRequest);
+        // 使用当前读锁住当前行
         ProofingProject project = lockProject(projectId);
         proofingProjectAuthService.requireSpacePermission(
                 project.getSpaceId(), loginUser, SpaceUserPermissionConstant.PROOFING_MANAGE);
+        // 判断当前选单状态是否支持修改
         requireVersion(project, updateRequest.getExpectedVersion());
         ThrowUtils.throwIf(!ProjectStatus.DRAFT.name().equals(project.getStatus()),
                 new BusinessException(40902, "只有草稿可以修改"));
-
+        // 更新选单信息
         boolean changed = false;
         if (updateRequest.getTitle() != null
                 && !Objects.equals(project.getTitle(), updateRequest.getTitle())) {
@@ -179,16 +205,106 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         return toVo(project);
     }
 
+    /**
+     * 草稿图片移除：数据库内原子删除 item、标记资产待清理并递增版本。
+     * COS 删除交给定时任务，避免在数据库事务中等待网络请求。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long removeDraftItem(Long projectId, Long itemId, Long expectedVersion,
+                                HttpServletRequest httpServletRequest) {
+        // 权限校验
+        requireProjectId(projectId);
+        ThrowUtils.throwIf(itemId == null || itemId <= 0 || expectedVersion == null || expectedVersion < 0,
+                ErrorCode.PARAMS_ERROR, "图片 ID 或版本不合法");
+        User loginUser = userService.getLoginUser(httpServletRequest);
+
+        // 与上传、发布共用项目行锁，避免草稿状态和版本在操作中变化。
+        ProofingProject project = lockProject(projectId);
+        proofingProjectAuthService.requireSpacePermission(
+                project.getSpaceId(), loginUser, SpaceUserPermissionConstant.PROOFING_MANAGE);
+        requireVersion(project, expectedVersion);
+        ThrowUtils.throwIf(!ProjectStatus.DRAFT.name().equals(project.getStatus()),
+                new BusinessException(40902, "只有草稿可以移除图片"));
+
+        ProofingItem item = itemService.lambdaQuery()
+                .eq(ProofingItem::getId, itemId)
+                .eq(ProofingItem::getProjectId, projectId)
+                .one();
+        ThrowUtils.throwIf(item == null, ErrorCode.NOT_FOUND_ERROR, "图片不存在");
+
+        // 只改本项目中该 item 引用的 READY 预览资产，失败时整笔事务回滚。
+        boolean marked = assetService.lambdaUpdate()
+                .eq(ProofingAsset::getId, item.getPreviewAssetId())
+                .eq(ProofingAsset::getProjectId, projectId)
+                .eq(ProofingAsset::getKind, "PREVIEW")
+                .eq(ProofingAsset::getStatus, "READY")
+                .set(ProofingAsset::getStatus, "DELETE_PENDING")
+                .update();
+        ThrowUtils.throwIf(!marked, ErrorCode.OPERATION_ERROR, "标记图片待清理失败");
+
+        boolean removed = itemService.remove(new LambdaQueryWrapper<ProofingItem>()
+                .eq(ProofingItem::getId, itemId)
+                .eq(ProofingItem::getProjectId, projectId));
+        ThrowUtils.throwIf(!removed, ErrorCode.OPERATION_ERROR, "移除图片失败");
+
+        project.setVersion(project.getVersion() + 1);
+        project.setUpdateTime(new Date());
+        ThrowUtils.throwIf(!this.updateById(project), ErrorCode.OPERATION_ERROR, "更新选单版本失败");
+        return project.getVersion();
+    }
+
+    /** 发布后预览明细冻结；后续上传、修改和移除都会因状态不再是 DRAFT 而被拒绝。 */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ProofingProjectVO publish(Long projectId, ProofingProjectPublishRequest publishRequest,
+                                     HttpServletRequest httpServletRequest) {
+        // 权限校验
+        requireProjectId(projectId);
+        ThrowUtils.throwIf(publishRequest == null || publishRequest.getExpectedVersion() == null
+                        || publishRequest.getExpectedVersion() < 0,
+                ErrorCode.PARAMS_ERROR, "版本号不合法");
+        User loginUser = userService.getLoginUser(httpServletRequest);
+
+        // 锁项目行，与上传完成和草稿图片移除串行，保证发布时的图片数量稳定。
+        ProofingProject project = lockProject(projectId);
+        proofingProjectAuthService.requireSpacePermission(
+                project.getSpaceId(), loginUser, SpaceUserPermissionConstant.PROOFING_MANAGE);
+        requireVersion(project, publishRequest.getExpectedVersion());
+        ThrowUtils.throwIf(!ProjectStatus.DRAFT.name().equals(project.getStatus()),
+                new BusinessException(40902, "只有草稿可以发布"));
+
+        // item 与 READY 预览资产在上传完成时同事务写入，草稿移除时也同事务删除。
+        long itemCount = itemService.lambdaQuery()
+                .eq(ProofingItem::getProjectId, projectId)
+                .count();
+        ThrowUtils.throwIf(itemCount == 0 || project.getSelectionLimit() > itemCount,
+                ErrorCode.OPERATION_ERROR, "图片数量不足，无法发布选单");
+
+        project.setStatus(ProjectStatus.SELECTING.name());
+        project.setVersion(project.getVersion() + 1);
+        project.setUpdateTime(new Date());
+        ThrowUtils.throwIf(!this.updateById(project), ErrorCode.OPERATION_ERROR, "发布选单失败");
+        return toVo(project);
+    }
+
+    /**
+     * 关闭选单（选单流程结束）
+     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ProofingProjectVO closeProject(Long projectId, ProofingProjectCloseRequest closeRequest,
                                            HttpServletRequest httpServletRequest) {
+        // 参数校验
         requireProjectId(projectId);
         validateDto(closeRequest, CLOSE_RULES);
+        // 获取登陆者身份信息
         User loginUser = userService.getLoginUser(httpServletRequest);
+        // 锁住数据行
         ProofingProject project = lockProject(projectId);
         proofingProjectAuthService.requireSpacePermission(
                 project.getSpaceId(), loginUser, SpaceUserPermissionConstant.PROOFING_CLOSE);
+        // 判断数据版本是否一致
         requireVersion(project, closeRequest.getExpectedVersion());
         ThrowUtils.throwIf(ProjectStatus.CLOSED.name().equals(project.getStatus()),
                 new BusinessException(40902, "选单已关闭"));
@@ -217,6 +333,7 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
     private ProofingProjectVO toVo(ProofingProject project) {
         ProofingProjectVO result = new ProofingProjectVO();
         BeanUtils.copyProperties(project, result);
+        // copyProperties不会自动把id复制过去，需要手动复制
         result.setProjectId(String.valueOf(project.getId()));
         return result;
     }
@@ -236,6 +353,4 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         );
     }
 }
-
-
 

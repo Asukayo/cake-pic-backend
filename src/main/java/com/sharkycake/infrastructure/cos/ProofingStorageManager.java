@@ -1,19 +1,20 @@
 package com.sharkycake.infrastructure.cos;
 
-import cn.hutool.core.io.FileUtil;
 import com.qcloud.cos.COSClient;
+import com.qcloud.cos.ClientConfig;
+import com.qcloud.cos.auth.BasicCOSCredentials;
 import com.qcloud.cos.http.HttpMethodName;
+import com.qcloud.cos.model.ObjectMetadata;
 import com.qcloud.cos.model.PutObjectRequest;
 import com.qcloud.cos.model.PutObjectResult;
-import com.qcloud.cos.model.ciModel.persistence.PicOperations;
+import com.qcloud.cos.region.Region;
 import com.sharkycake.common.exception.ErrorCode;
 import com.sharkycake.common.exception.ThrowUtils;
 import org.springframework.stereotype.Component;
 
+import javax.annotation.PreDestroy;
 import java.io.File;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
 
 /**
  * 私有存储桶管理器
@@ -21,36 +22,59 @@ import java.util.List;
 @Component
 public class ProofingStorageManager {
 
-    private CosConfig cosConfig;
+    private final CosConfig cosConfig;
 
-    private COSClient cosClient;
+    private final COSClient cosClient;
 
-    public ProofingStorageManager(CosConfig cosConfig,COSClient cosClient) {
+    public ProofingStorageManager(CosConfig cosConfig) {
         this.cosConfig = cosConfig;
-        this.cosClient = cosClient;
+        // 与原图库共用凭证，但为 proofing 单独限定一次 COS 请求的最长时间。
+        ClientConfig clientConfig = new ClientConfig(new Region(cosConfig.getRegion()));
+        clientConfig.setConnectionTimeout(10_000);
+        clientConfig.setSocketTimeout(60_000);
+        clientConfig.setRequestTimeout(5 * 60_000);
+        clientConfig.setRequestTimeOutEnable(true);
+        this.cosClient = new COSClient(
+                new BasicCOSCredentials(cosConfig.getSecretId(), cosConfig.getSecretKey()), clientConfig);
     }
 
-    public PutObjectResult putObject(String key, File file) {
-        return cosClient.putObject(cosConfig.getProofingBucket(), key, file);
+    /** 显式设置媒体类型，签名访问预览时浏览器才能按图片展示。 */
+    public PutObjectResult putObject(String key, File file, String contentType) {
+        PutObjectRequest request = new PutObjectRequest(cosConfig.getProofingBucket(), key, file);
+        ObjectMetadata metadata = new ObjectMetadata();
+        metadata.setContentType(contentType);
+        request.setMetadata(metadata);
+        return cosClient.putObject(request);
     }
 
     public void delete(String key){
-        // deleteObject(proofingBucket, key)
         cosClient.deleteObject(cosConfig.getProofingBucket(), key);
-
     }
 
-    /**
-     * // 生成 GET 预签名 URL，限制 1～120 秒
-     */
+    /** 清理时使用资产记录的原始桶名，避免配置换桶后遗漏旧对象。 */
+    public void delete(String bucket, String key) {
+        cosClient.deleteObject(bucket, key);
+    }
+
+    /** 使用当前私有桶生成 GET 预签名 URL。 */
     public String signGet(String key, int ttlSeconds) {
+        return signGet(cosConfig.getProofingBucket(), key, ttlSeconds);
+    }
+
+    /** 使用资产记录中的桶名签名，避免换桶后把旧资产签到新桶。 */
+    public String signGet(String bucket, String key, int ttlSeconds) {
         ThrowUtils.throwIf(ttlSeconds < 1 || ttlSeconds > 120,
                 ErrorCode.PARAMS_ERROR, "有效期必须为 1～120 秒");
 
         Date expiration = new Date(System.currentTimeMillis() + ttlSeconds * 1000L);
         return cosClient.generatePresignedUrl(
-                cosConfig.getProofingBucket(), key, expiration, HttpMethodName.GET
+                bucket, key, expiration, HttpMethodName.GET
         ).toExternalForm();
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        cosClient.shutdown();
     }
 
 }

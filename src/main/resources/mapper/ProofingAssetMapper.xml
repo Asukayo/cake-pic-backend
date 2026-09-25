@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.sharkycake.proofing.mapper.ProofingAssetMapper">
+
+    <resultMap id="BaseResultMap" type="com.sharkycake.proofing.entity.ProofingAsset">
+            <id property="id" column="id" />
+            <result property="projectId" column="projectId" />
+            <result property="uploadedBy" column="uploadedBy" />
+            <result property="kind" column="kind" />
+            <result property="bucket" column="bucket" />
+            <result property="objectKey" column="objectKey" />
+            <result property="sizeBytes" column="sizeBytes" />
+            <result property="sha256" column="sha256" />
+            <result property="width" column="width" />
+            <result property="height" column="height" />
+            <result property="contentType" column="contentType" />
+            <result property="status" column="status" />
+            <result property="expiresAt" column="expiresAt" />
+            <result property="createTime" column="createTime" />
+            <result property="updateTime" column="updateTime" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,projectId,uploadedBy,kind,bucket,objectKey,
+        sizeBytes,sha256,width,height,contentType,
+        status,expiresAt,createTime,updateTime
+    </sql>
+</mapper>
