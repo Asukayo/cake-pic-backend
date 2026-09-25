@@ -46,4 +46,7 @@ public interface ProofingProjectService extends IService<ProofingProject> {
      * 创建临时短链
      */
     ProofingSharedVO createSharingLink(Long projectId, HttpServletRequest httpServletRequest);
+
+    Boolean revokeSharing(Long projectId, HttpServletRequest httpServletRequest);
+
 }

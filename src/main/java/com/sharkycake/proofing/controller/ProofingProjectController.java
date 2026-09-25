@@ -168,7 +168,14 @@ public class ProofingProjectController {
         );
     }
 
-
+    // 增加 POST /{projectId}/share/revoke
+    @PostMapping("/{projectId}/share/revoke")
+    public BaseResponse<Boolean> revokedShared(@PathVariable Long projectId,
+                                                        HttpServletRequest httpServletRequest){
+        return ResultUtils.success(
+                proofingProjectService.revokeSharing(projectId,httpServletRequest)
+        );
+    }
 
     /**
      * 关闭选单

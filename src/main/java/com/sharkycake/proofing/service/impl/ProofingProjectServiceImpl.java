@@ -361,6 +361,24 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         return vo;
     }
 
+    /**
+     *  删除已经创建的短链，不论是否存在都返回true即可
+     */
+    @Override
+    public Boolean revokeSharing(Long projectId, HttpServletRequest httpServletRequest) {
+        // 参数校验
+        requireProjectId(projectId);
+        // 获取登陆者身份信息
+        User loginUser = userService.getLoginUser(httpServletRequest);
+        ProofingProject project = getById(projectId);
+        ThrowUtils.throwIf(project == null,ErrorCode.OPERATION_ERROR,"请求的项目不存在");
+        proofingProjectAuthService.requireSpacePermission(
+                project.getSpaceId(), loginUser, SpaceUserPermissionConstant.PROOFING_MANAGE);
+        // 删除短链
+        redisTemplate.delete(PROOF_SHARING_PREFIX + projectId);
+        return true;
+    }
+
     private ProofingProject lockProject(Long projectId) {
         ProofingProject project = baseMapper.selectForUpdate(projectId);
         ThrowUtils.throwIf(project == null, ErrorCode.NOT_FOUND_ERROR, "选单不存在");
