@@ -1,8 +1,7 @@
 package com.sharkycake.proofing.vo;
 
-import com.sharkycake.proofing.entity.ProofingItem;
+import com.sharkycake.proofing.dto.ProofingAnnotation;
 import lombok.Data;
-import org.springframework.beans.BeanUtils;
 
 import java.io.Serializable;
 import java.util.Date;
@@ -22,6 +21,8 @@ public class ProofingPublicItemVO implements Serializable {
     private Boolean selected;
 
     private String previewUrl;
+
+    private ProofingAnnotation annotation;
 
     private Date previewUrlExpiresAt;
 

@@ -55,7 +55,7 @@ public class ProofingItem implements Serializable {
      * 文字及可选矩形批注
      */
     @TableField(value = "annotation")
-    private Object annotation;
+    private String annotation;
 
     /**
      * 成片文件 ID

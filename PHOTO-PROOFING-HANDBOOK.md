@@ -261,10 +261,37 @@ Redis 数据丢失时，分享链接和客户会话可能失效；服务恢复�
 | --- | --- | --- |
 | `id`, `projectId` | BIGINT | `UNIQUE(projectId)`，一单只确认一次 |
 | `requestId` | VARCHAR(64), ascii_bin | 客户端为一次确认生成 UUID；网络重试保持不变 |
-| `manifestJson` | JSON | 有序列表：itemId、displayName、previewAssetId、预览宽高、selected=true、annotation |
+| `manifestJson` | JSON | `items` 数组，只含已选照片；按 `sortOrder,id` 排序并固定 itemId、displayName、previewAssetId、预览宽高和 annotation |
 | `confirmedAt` | DATETIME(3) | 服务端确认时间 |
 
-确认事务：锁项目 → 验证客户权限 → 检查已有 submission → 检查状态和版本 → 读取已选项并校验上限/批注 → 写快照 → 改为 CONFIRMED 并递增版本 → 提交。
+确认流程：先校验客户会话和当前分享 → 开事务并锁项目 → 重查项目状态/归属 → 检查已有 submission → 若尚未确认，再检查 SELECTING 和版本 → 读取已选项并校验数量/批注/预览资产 → 写快照 → 改为 CONFIRMED 并递增版本 → 提交。同一 requestId 的成功重试在检查版本前返回原快照。
+
+本阶段使用的最小 manifest 示例（ID 在 JSON 中用字符串，矩形坐标相对于已纠正朝向的服务端预览图）：
+
+```json
+{
+  "items": [
+    {
+      "itemId": "201",
+      "displayName": "毕业照-01.jpg",
+      "previewAssetId": "501",
+      "previewWidth": 1600,
+      "previewHeight": 1067,
+      "annotation": {"text": "这里的路人请去掉", "rect": {"x": 0.62, "y": 0.25, "w": 0.15, "h": 0.3}}
+    },
+    {
+      "itemId": "205",
+      "displayName": "毕业照-05.jpg",
+      "previewAssetId": "505",
+      "previewWidth": 1067,
+      "previewHeight": 1600,
+      "annotation": null
+    }
+  ]
+}
+```
+
+数组成员本身表示已选，数组顺序就是展示顺序，因此不重复保存 `selected` 或 `sortOrder`。预览尺寸用于解释固定批注的坐标；文件身份通过已关联的 `previewAssetId` 找回，快照不复制 bucket/key、短时 URL、finalAssetId。`confirmedAt` 和 `requestId` 在 submission 行中，不重复写入 manifest。确认时以数据库中已选 item 和 READY PREVIEW 资产构造清单，不接受客户端传来的 manifest。
 
 确认重试时，先检查当前客户仍有访问权。如果相同 requestId 已成功，返回原快照，不再次写入；不同 requestId 已确认则返回 ALREADY_CONFIRMED 并允许前端读取已有清单。身份验证不能因为“幂等命中”而跳过。
 
@@ -393,6 +420,8 @@ JSON 示例是拟定契约，供开发时对齐，尚不是可调用接口：
 | `GET /proofing/public/delivery` | 会话 header | 是否已交付；已交付时返回 ZIP 资产 ID、大小、时间 |
 
 客户打开分享链接后，前端用链接令牌换短期会话，清除地址栏中的令牌，再请求当前项目和第一页明细；页面直接展示该页所有预览图。`GET items` 只对当前页授权，逐条校验资产属于该项目、状态为 READY、类型为 PREVIEW 且仍被当前可见 item 引用，再返回 `previewUrl` 和 `previewUrlExpiresAt`。默认每页 20 张、最多 50 张；翻页再请求下一页，不一次签发整单最多 300 张的地址。页面停留过久导致单张 URL 失效时，可调用 access 接口重新签发。
+
+批注接口把每次明确的保存请求视为一次写入，即使内容与原值相同，也在版本匹配时递增版本；重复携带旧版本的请求返回冲突。客户端保存成功后使用返回的 `currentVersion`，不承诺批注保存请求幂等。`GET items` 在 SELECTING 返回已保存批注供刷新后继续编辑。
 
 `GET items` 不返回内部 bucket/key、未交付 finalAssetId、员工身份或原图库长期 URL。客户预览地址最长有效 10 分钟，也不超过会话和分享的剩余寿命；员工预览地址仍为 120 秒。即使同页有多张图，授权仍逐条按白名单校验。分享撤销或轮换不能提前撤回已经签发的 COS 地址，旧地址最多继续有效 10 分钟。
 
@@ -574,10 +603,10 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 | 1. 项目与空间权限 | 4～6 小时 | 空间所有者或团队成员能按权限创建并查看选片单 | 后端代码已写：创建、按空间分页列表、详情、仅 DRAFT 修改、关闭；修改与关闭锁项目行并检查版本。列表兼容 `page` 参数并校验继承的 `current` 字段。用户报告已执行建表 | 2026-09-24 独立输出目录离线编译和 `page=2` 参数绑定手动验证通过；JUnit 测试因本机未缓存 Surefire JUnit 平台而未执行。用户报告创建、列表、详情、草稿修改、旧版本冲突、关闭及越权请求均已完成；未留存具体响应与数据库记录，简单前端页面未确认 |
 | 2. 私有预览与发布 | 10～16 小时 | 可上传、浏览预览并发布选片 | 后端接口已写：私有桶管理器、asset/item 两张表和生成类，预览上传、员工 item 分页列表、授权签名访问、草稿图片移除、DRAFT→SELECTING 发布和资产清理；用户报告已建表。员工页面未确认 | 编译成功；图片处理 3 个定向测试通过。列表、签名访问、草稿移除、发布和清理代码仅通过编译；实际数据库结构、真实 COS 上传/删除、整条上传链路、并发与权限场景仍未验证 |
 | 3. 分享与客户选片 | 8～12 小时 | 客户能访问指定单并在上限内选片 | 员工分享和客户换会话接口已写；客户会话鉴权、项目详情、分页图片、当前页签名地址、单张续签和 selected=true/false 选片代码已写。选片在项目行锁内校验状态、版本和上限，状态变化时同事务更新 item 与项目版本。确认后列表暂按 item.selected 过滤，第 4 阶段要改为 submission 快照。分享有效期契约已与固定 7 天实现对齐 | 2026-09-26 使用独立构建输出目录编译通过；并发、越权、真实 Redis/COS/数据库及 HTTP 链路未验收 |
-| 4. 批注与固定清单 | 8～12 小时 | 客户确认，摄影师看到固定修图清单 | 未开始 | 未验证 |
+| 4. 批注与固定清单 | 8～12 小时 | 客户确认，摄影师看到固定修图清单 | manifest、submission 建表脚本及持久化骨架已写；客户批注保存/清空、分页读回、取消选片清空批注的后端代码已写。确认事务、固定快照读取和页面尚未实现 | 独立输出目录离线 Maven 编译与 `git diff --check` 通过；真实数据库、Redis、COS、HTTP、并发及矩形页面验收未执行 |
 | 5. 成片与交付包 | 12～20 小时 | 成片上传、打包、发布与客户下载 | 未开始 | 未验证 |
 
-**当前下一步：**继续第 3 阶段验收。客户 selected=true/false 选片代码已写并通过独立输出目录编译；验证重复设置相同状态、旧版本冲突、最后一个名额并发竞争、跨项目 itemId、分享撤销后访问，以及真实 Redis/COS/数据库和 HTTP 链路。客户选片页面未确认。分享有效期已与固定 7 天实现对齐。第二阶段的真实数据库/COS 上传、授权看图、草稿移除、发布、私有桶匿名拒绝、失败清理和并发边界仍待验收；员工页面未确认，不把代码已写记为阶段验收通过。[第二阶段流程图](PROOFING-STAGE2-FLOW.md)和[第三阶段流程图](PROOFING-STAGE3-FLOW.md)可用于复习。
+**当前下一步：**实现第 4 阶段的确认事务与 requestId 幂等，再把确认后的客户和员工读取切到 submission。客户批注读写代码已写并通过编译，真实数据库 JSON 保存/读回及 HTTP 验证仍待做。第 3 阶段的真实 Redis、数据库、COS、HTTP、并发及越权验收和第二阶段真实上传、签名、清理与私有桶验证也仍待补做。[第二阶段流程图](PROOFING-STAGE2-FLOW.md)和[第三阶段流程图](PROOFING-STAGE3-FLOW.md)可用于复习。
 
 建表脚本建议分别保存为 `src/main/resources/sql/create_proofing_project.sql`、`create_proofing_asset.sql`、`create_proofing_item.sql`、`create_proofing_submission.sql`、`create_proofing_delivery_task.sql`。文件按阶段创建，并在专用测试库检查实际结构；已有数据库的后续变更另写 ALTER 迁移，不能以 `CREATE TABLE IF NOT EXISTS` 当作自动升级。
 
@@ -662,6 +691,10 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 **容易卡住：**先改项目状态再另开事务保存清单；清单只保存 itemId 没保存批注；客户双击得到两个不同确认结果。
 
 **第一小步（约 20 分钟）：**手写包含两张照片和一条批注的 manifest JSON，用它检查快照是否保留了摄影师实际需要的信息。
+
+**2026-09-26 工作块 1：manifest 与持久化准备。**第 4.5 节已补两张照片和一条矩形批注的样例，并明确不存重复的 selected、sortOrder 或文件地址。新增 `create_proofing_submission.sql`、Entity、Mapper、Service，以及 `ProofingAnnotation`、`ProofingAnnotationRequest`、`ProofingConfirmRequest`、`ProofingManifest` 类型；`ProofingItem.annotation` 改为 JSON 字符串映射，为后续显式校验与序列化做准备。选片代码在取消选择的同一 item 更新中把 annotation 设为空。代码已写，尚未执行建表；`git diff --check` 通过。默认 Maven 输出目录的已有文件访问被拒绝，改用临时 POM 和独立输出目录后离线 Maven 编译成功（199 个源文件）；临时 POM 和输出已清理。编译只证明代码可编译，真实数据库 JSON 映射、Redis、COS、HTTP 和并发均未验证。下一块：由用户实现批注的状态/版本/坐标校验和事务写入，助手检查整块代码；随后再做确认事务。
+
+**2026-09-26 工作块 2：批注后端读写闭环。**用户完成客户批注接口：校验会话、批注文字和可选矩形，先对项目状态与 expectedVersion 做条件更新，再读取当前项目已选 item 并写入 JSON 字符串；同一事务中若 item 不存在则回滚项目版本。`GET items` 已把 JSON 解析为批注对象，取消选片继续清空批注。按用户选择，相同内容的明确保存也推进版本，不增加旧值比较；助手补齐入口参数校验、写响应 `Cache-Control: no-store` 和少量注释。独立输出目录离线 Maven 编译成功（200 个源文件），`git diff --check` 通过；临时构建文件已清理。仅能确认代码已写且可编译，尚未用真实数据库验证 JSON 读写/事务回滚，也未完成 Redis、HTTP、并发和前端矩形留白坐标验收。下一块：确认事务、同 requestId 重试与不可变 manifest。
 
 ### 9.6 阶段 5：成片与交付包
 

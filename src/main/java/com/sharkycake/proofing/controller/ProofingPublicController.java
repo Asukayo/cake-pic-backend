@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.sharkycake.common.BaseResponse;
 import com.sharkycake.common.ResultUtils;
 import com.sharkycake.proofing.dto.ProofIngProjectSessionRequest;
+import com.sharkycake.proofing.dto.ProofingAnnotationRequest;
 import com.sharkycake.proofing.dto.ProofingProjectSelectRequest;
 import com.sharkycake.proofing.service.ProofingProjectService;
 import com.sharkycake.proofing.service.ProofingPublicReadService;
@@ -73,5 +74,21 @@ public class ProofingPublicController {
         response.setHeader("Cache-Control", "no-store");
         return ResultUtils.success(proofingPublicReadService.selectItem(sessionToken, selectRequest, itemId));
     }
+
+    /** 保存或清空一张已选图片的批注。 */
+    @PutMapping("/items/{itemId}/annotation")
+    public BaseResponse<ProofingAnnotationVO> addAnnotation(
+            @PathVariable("itemId") Long itemId,
+            @RequestHeader(value = "X-Proofing-Session", required = false) String sessionToken,
+            @RequestBody ProofingAnnotationRequest request,
+            HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        return ResultUtils.success(
+                proofingPublicReadService.addAnnotation(itemId, sessionToken, request)
+        );
+    }
+
+
+
 
 }

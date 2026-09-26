@@ -3,20 +3,21 @@ package com.sharkycake.proofing.service;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.digest.DigestUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sharkycake.common.exception.BusinessException;
 import com.sharkycake.common.exception.ErrorCode;
 import com.sharkycake.common.exception.ThrowUtils;
 import com.sharkycake.infrastructure.cos.ProofingStorageManager;
+import com.sharkycake.proofing.dto.ProofingAnnotation;
+import com.sharkycake.proofing.dto.ProofingAnnotationRequest;
 import com.sharkycake.proofing.dto.ProofingProjectSelectRequest;
 import com.sharkycake.proofing.entity.ProofingAsset;
 import com.sharkycake.proofing.entity.ProofingItem;
 import com.sharkycake.proofing.entity.ProofingProject;
 import com.sharkycake.proofing.enums.ProjectStatus;
 import com.sharkycake.proofing.mapper.ProofingProjectMapper;
-import com.sharkycake.proofing.vo.ProofingAssetAccessVO;
-import com.sharkycake.proofing.vo.ProofingPublicItemVO;
-import com.sharkycake.proofing.vo.ProofingPublicProjectVO;
-import com.sharkycake.proofing.vo.ProofingSelectVO;
+import com.sharkycake.proofing.vo.*;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,18 +42,22 @@ public class ProofingPublicReadService {
     private final ProofingItemService proofingItemService;
     private final ProofingAssetService proofingAssetService;
     private final ProofingStorageManager proofingStorageManager;
+    private final ObjectMapper objectMapper;
 
     public ProofingPublicReadService(StringRedisTemplate redisTemplate,
                                      ProofingProjectService proofingProjectService,
                                      ProofingProjectMapper proofingProjectMapper,
                                      ProofingItemService proofingItemService,
-                                     ProofingAssetService proofingAssetService, ProofingStorageManager proofingStorageManager) {
+                                     ProofingAssetService proofingAssetService,
+                                     ProofingStorageManager proofingStorageManager,
+                                     ObjectMapper objectMapper) {
         this.redisTemplate = redisTemplate;
         this.proofingProjectService = proofingProjectService;
         this.proofingProjectMapper = proofingProjectMapper;
         this.proofingItemService = proofingItemService;
         this.proofingAssetService = proofingAssetService;
         this.proofingStorageManager = proofingStorageManager;
+        this.objectMapper = objectMapper;
     }
 
 
@@ -169,6 +174,8 @@ public class ProofingPublicReadService {
         vo.setSelected(Objects.equals(item.getSelected(), 1));
         vo.setPreviewUrl(access.getUrl());
         vo.setPreviewUrlExpiresAt(access.getExpiresAt());
+        // 增加Annotation
+        vo.setAnnotation(parseAnnotation(item.getAnnotation()));
         return vo;
     }
 
@@ -230,6 +237,8 @@ public class ProofingPublicReadService {
                     .eq(ProofingItem::getProjectId, project.getId())
                     .eq(ProofingItem::getSelected, alreadySelected ? 1 : 0)
                     .set(ProofingItem::getSelected, selected ? 1 : 0)
+                    // 取消选片时，同一次更新清除草稿批注。
+                    .set(!selected, ProofingItem::getAnnotation, null)
                     .update();
             ThrowUtils.throwIf(!itemUpdated, ErrorCode.OPERATION_ERROR, "更新图片选择状态失败");
 
@@ -251,5 +260,98 @@ public class ProofingPublicReadService {
         vo.setLimitationLeft(project.getSelectionLimit() - (int) selectedCount);
         vo.setCurrentVersion(project.getVersion());
         return vo;
+    }
+
+    /** 保存或清空已选图片的批注。 */
+    @Transactional(rollbackFor = Exception.class)
+    public ProofingAnnotationVO addAnnotation(
+            Long itemId, String sessionToken, ProofingAnnotationRequest request) {
+        ThrowUtils.throwIf(itemId == null || itemId <= 0 || request == null
+                        || request.getExpectedVersion() == null
+                        || request.getExpectedVersion() < 0,
+                ErrorCode.PARAMS_ERROR, "图片 ID 或版本不合法");
+        ProofingProject project = requireCustomerProject(sessionToken);
+        ProofingAnnotation annotation = normalizeAnnotation(request.getAnnotation());
+        String json = annotation == null ? null : toAnnotationJson(annotation);
+        Long version = request.getExpectedVersion();
+
+        // 第一条数据库写入锁住项目；失败统一提示刷新。
+        boolean advanced = proofingProjectService.lambdaUpdate()
+                .eq(ProofingProject::getId, project.getId())
+                .eq(ProofingProject::getStatus, ProjectStatus.SELECTING.name())
+                .eq(ProofingProject::getVersion, version)
+                .set(ProofingProject::getVersion, version + 1)
+                .update();
+        ThrowUtils.throwIf(!advanced,
+                new BusinessException(40901, "选单状态或版本已变化，请刷新后重试"));
+
+        ProofingItem item = proofingItemService.lambdaQuery()
+                .eq(ProofingItem::getProjectId, project.getId())
+                .eq(ProofingItem::getId, itemId)
+                .eq(ProofingItem::getSelected, 1)
+                .one();
+        ThrowUtils.throwIf(item == null, ErrorCode.NOT_FOUND_ERROR, "已选图片不存在");
+
+        // 相同内容也允许保存；SQL 异常会使整个事务回滚。
+        proofingItemService.lambdaUpdate()
+                .eq(ProofingItem::getProjectId, project.getId())
+                .eq(ProofingItem::getId, itemId)
+                .eq(ProofingItem::getSelected, 1)
+                .set(ProofingItem::getAnnotation, json)
+                .update();
+
+        ProofingAnnotationVO vo = new ProofingAnnotationVO();
+        vo.setAnnotation(annotation);
+        vo.setCurrentVersion(version + 1);
+        return vo;
+    }
+
+
+    /**
+     * 标准化前端传来的注解
+     */
+    private ProofingAnnotation normalizeAnnotation(ProofingAnnotation annotation) {
+        if (annotation == null) {
+            return null; // 明确清空批注
+        }
+
+        String text = annotation.getText() == null
+                ? null : annotation.getText().strip();
+        ThrowUtils.throwIf(text == null || text.isEmpty()
+                        || text.codePointCount(0, text.length()) > 500,
+                ErrorCode.PARAMS_ERROR, "批注文字需为 1～500 字");
+        annotation.setText(text);
+
+        ProofingAnnotation.Rect rect = annotation.getRect();
+        if (rect != null) {
+            Double x = rect.getX(), y = rect.getY();
+            Double w = rect.getW(), h = rect.getH();
+            ThrowUtils.throwIf(x == null || y == null || w == null || h == null
+                            || !Double.isFinite(x) || !Double.isFinite(y)
+                            || !Double.isFinite(w) || !Double.isFinite(h)
+                            || x < 0 || y < 0 || w <= 0 || h <= 0
+                            || x + w > 1 || y + h > 1,
+                    ErrorCode.PARAMS_ERROR, "矩形坐标不合法");
+        }
+        return annotation;
+    }
+
+    private ProofingAnnotation parseAnnotation(String json) {
+        if (json == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, ProofingAnnotation.class);
+        } catch (JsonProcessingException e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "已保存的批注无法解析");
+        }
+    }
+
+    private String toAnnotationJson(ProofingAnnotation annotation) {
+        try {
+            return objectMapper.writeValueAsString(annotation);
+        } catch (JsonProcessingException e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "批注无法序列化");
+        }
     }
 }
