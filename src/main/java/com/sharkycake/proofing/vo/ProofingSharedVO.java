@@ -3,13 +3,14 @@ package com.sharkycake.proofing.vo;
 
 import lombok.Data;
 
+import java.io.Serializable;
 import java.util.Date;
 
 /**
  * 用于存储创建临时连接结构体
  */
 @Data
-public class ProofingSharedVO {
+public class ProofingSharedVO implements Serializable {
 
     /**
      * 由谁创建

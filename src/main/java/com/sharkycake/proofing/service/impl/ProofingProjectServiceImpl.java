@@ -3,6 +3,7 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -15,11 +16,7 @@ import com.sharkycake.common.exception.BusinessException;
 import com.sharkycake.common.exception.ErrorCode;
 import com.sharkycake.common.exception.ThrowUtils;
 import com.sharkycake.proofing.auth.ProofingProjectAuthService;
-import com.sharkycake.proofing.dto.ProofingProjectCloseRequest;
-import com.sharkycake.proofing.dto.ProofingProjectCreateRequest;
-import com.sharkycake.proofing.dto.ProofingProjectPublishRequest;
-import com.sharkycake.proofing.dto.ProofingProjectQueryRequest;
-import com.sharkycake.proofing.dto.ProofingProjectUpdateRequest;
+import com.sharkycake.proofing.dto.*;
 import com.sharkycake.proofing.entity.ProofingAsset;
 import com.sharkycake.proofing.entity.ProofingItem;
 import com.sharkycake.proofing.entity.ProofingProject;
@@ -30,6 +27,7 @@ import com.sharkycake.proofing.service.ProofingProjectService;
 import com.sharkycake.proofing.mapper.ProofingProjectMapper;
 import com.sharkycake.proofing.vo.ProofingProjectVO;
 import com.sharkycake.proofing.vo.ProofingSharedVO;
+import com.sharkycake.proofing.vo.ProofingUserSessionVO;
 import com.sharkycake.space.constant.SpaceUserPermissionConstant;
 import com.sharkycake.user.entity.User;
 import com.sharkycake.user.service.UserService;
@@ -85,6 +83,7 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
     );
 
     private static final String PROOF_SHARING_PREFIX = "proofing:share:";
+    private static final String PROOF_USER_SESSION_PREFIX = "proofing:session:";
     private static final SecureRandom SHARE_RANDOM = new SecureRandom();
 
     @Value("${proofing.shareBaseUrl}")
@@ -379,6 +378,58 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         return true;
     }
 
+    /**
+     * 用于生成给User的临时令牌
+     */
+    @Override
+    public ProofingUserSessionVO createSessionToken(ProofIngProjectSessionRequest request) {
+        ThrowUtils.throwIf(request == null
+                        || request.getPublicId() == null || request.getPublicId().isBlank()
+                        || request.getShareToken() == null || request.getShareToken().isBlank(),
+                ErrorCode.PARAMS_ERROR, "分享参数不能为空");
+        String publicId = request.getPublicId();
+        String sharedToken = request.getShareToken();
+        // 根据publicId查找项目
+        ProofingProject project = this.lambdaQuery().eq(ProofingProject::getPublicId, publicId).one();
+        ThrowUtils.throwIf(project == null, new BusinessException(41001, "链接无效、已过期或已撤销"));
+        String status = project.getStatus();
+        boolean accessible = ProjectStatus.SELECTING.name().equals(status)
+                || ProjectStatus.CONFIRMED.name().equals(status)
+                || ProjectStatus.DELIVERED.name().equals(status);
+        ThrowUtils.throwIf(!accessible, new BusinessException(41001, "链接无效、已过期或已撤销"));
+        Long projectId = project.getId();
+        // 分享令牌只用于换会话；Redis 中只保存它的摘要。
+        String shareKey = PROOF_SHARING_PREFIX + project.getId();
+        String currentShareHash = redisTemplate.opsForValue().get(shareKey);
+        String suppliedHash = DigestUtil.sha256Hex(request.getShareToken());
+        ThrowUtils.throwIf(currentShareHash == null || !currentShareHash.equals(suppliedHash),
+                new BusinessException(41001, "链接无效、已过期或已撤销"));
+        // 检查剩余时间
+        Long remainingSeconds = redisTemplate.getExpire(shareKey, TimeUnit.SECONDS);
+        ThrowUtils.throwIf(remainingSeconds == null || remainingSeconds <= 0,
+                new BusinessException(41001, "链接无效、已过期或已撤销"));
+        long sessionSeconds = Math.min(30 * 60L, remainingSeconds);
+        // 验签通过，给用户生成对应的会话令牌
+        byte[] bytes = new byte[32];
+        SHARE_RANDOM.nextBytes(bytes);
+        String sessionToken = Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(bytes);
+        // Key 使用会话令牌的摘要，是为了不把明文会话令牌放进 Redis Key，
+        // 使用返回给用户的摘要作为key，避免将projectId等内部字段返回给用户
+        String sessionKey = PROOF_USER_SESSION_PREFIX + DigestUtil.sha256Hex(sessionToken);
+        // currentShareHash 要存在会话 Value 里，是为了让旧会话在分享链接轮换或撤销后失效。
+        String sessionValue = project.getId() + ":" + currentShareHash;
+        redisTemplate.opsForValue().set(
+                sessionKey, sessionValue, Duration.ofSeconds(sessionSeconds));
+
+        ProofingUserSessionVO vo = new ProofingUserSessionVO();
+        vo.setToken(sessionToken);
+        vo.setProjectId(project.getId().toString());
+        vo.setExpiresAt(Date.from(Instant.now().plusSeconds(sessionSeconds)));
+        return vo;
+    }
+
     private ProofingProject lockProject(Long projectId) {
         ProofingProject project = baseMapper.selectForUpdate(projectId);
         ThrowUtils.throwIf(project == null, ErrorCode.NOT_FOUND_ERROR, "选单不存在");
@@ -403,6 +454,8 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
     }
 
 
+
+
     /**
      * 用来对dto进行参数校验
      */
@@ -416,5 +469,8 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
                         ErrorCode.PARAMS_ERROR, field + "不合法")
         );
     }
+
+
+
 }
 

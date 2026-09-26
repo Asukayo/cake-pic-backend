@@ -1,15 +1,12 @@
 package com.sharkycake.proofing.service;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.sharkycake.proofing.dto.ProofingProjectCloseRequest;
-import com.sharkycake.proofing.dto.ProofingProjectCreateRequest;
-import com.sharkycake.proofing.dto.ProofingProjectPublishRequest;
-import com.sharkycake.proofing.dto.ProofingProjectQueryRequest;
-import com.sharkycake.proofing.dto.ProofingProjectUpdateRequest;
+import com.sharkycake.proofing.dto.*;
 import com.sharkycake.proofing.entity.ProofingProject;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.sharkycake.proofing.vo.ProofingProjectVO;
 import com.sharkycake.proofing.vo.ProofingSharedVO;
+import com.sharkycake.proofing.vo.ProofingUserSessionVO;
 
 import javax.servlet.http.HttpServletRequest;
 
@@ -49,4 +46,5 @@ public interface ProofingProjectService extends IService<ProofingProject> {
 
     Boolean revokeSharing(Long projectId, HttpServletRequest httpServletRequest);
 
+    ProofingUserSessionVO createSessionToken(ProofIngProjectSessionRequest request);
 }
