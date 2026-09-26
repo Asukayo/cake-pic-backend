@@ -5,7 +5,7 @@ import lombok.Data;
 import java.io.Serializable;
 import java.util.Date;
 
-/** 员工查看私有预览图时使用的短时访问地址。 */
+/** 通过权限校验后签发的单张私有预览图短时访问地址。 */
 @Data
 public class ProofingAssetAccessVO implements Serializable {
 

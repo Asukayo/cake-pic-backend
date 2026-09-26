@@ -363,14 +363,14 @@ JSON 示例是拟定契约，供开发时对齐，尚不是可调用接口：
 
 | 方法与路径 | 输入 | 返回/规则 |
 | --- | --- | --- |
-| `POST /proofing/projects/{id}/share` | expiresAt | 生成或轮换链接，仅有管理权限的员工；返回一次明文链接和过期时间 |
+| `POST /proofing/projects/{id}/share` | 无请求体；固定有效期 7 天 | 生成或轮换链接，仅有管理权限的员工；返回一次明文链接和过期时间 |
 | `POST /proofing/projects/{id}/share/revoke` | 无请求体 | 删除当前分享记录，使旧链接和客户会话失效 |
 | `POST /proofing/public/session` | publicId、shareToken | 交换客户会话，返回 token、expiresAt 和 projectId |
 | `GET /proofing/public/project` | 客户会话 header | 当前单元信息、状态和版本；不接受外部 spaceId |
 
 链接格式示意：`https://<你的前端域名>/proofing/<publicId>#token=<随机令牌>`。`publicId` 仅定位项目；真正凭证在 fragment，前端读取后通过 POST body 交换会话，并清除地址栏 fragment。
 
-仅 `SELECTING`、`CONFIRMED`、`DELIVERED` 项目允许生成链接。分享令牌用 `SecureRandom` 生成至少 32 字节，再 Base64URL 编码；明文只返回一次，不写日志或 Redis Key。Redis 用 `proofing:share:{projectId}` 保存令牌的 SHA-256 摘要，设置不超过 30 天的 TTL；同一项目再次生成时用一次带 TTL 的 SET 覆盖旧记录，撤销时 DEL 当前记录。Redis Key 按项目 ID 命名，是多实例共享的状态，不需要为此增加分布式锁。并发的两个已授权分享操作以最后完成的 Redis 写入为准；项目关闭始终由数据库状态阻断访问。
+仅 `SELECTING`、`CONFIRMED`、`DELIVERED` 项目允许生成链接。分享令牌用 `SecureRandom` 生成至少 32 字节，再 Base64URL 编码；明文只返回一次，不写日志或 Redis Key。Redis 用 `proofing:share:{projectId}` 保存令牌的 SHA-256 摘要，TTL 固定 7 天；同一项目再次生成时用一次带 TTL 的 SET 覆盖旧记录，撤销时 DEL 当前记录。Redis Key 按项目 ID 命名，是多实例共享的状态，不需要为此增加分布式锁。并发的两个已授权分享操作以最后完成的 Redis 写入为准；项目关闭始终由数据库状态阻断访问。
 
 客户会话也是独立的高熵随机令牌。Redis 按客户会话令牌摘要保存 `{projectId,shareTokenHash}`，TTL 最多 30 分钟且不能超过当前分享记录的剩余寿命；会话只绑定一个项目。对 Redis 持久化配置不作“永不落盘”的承诺，这里的决定是 **不在 MySQL 持久化分享状态**。
 
@@ -384,17 +384,19 @@ JSON 示例是拟定契约，供开发时对齐，尚不是可调用接口：
 
 | 方法与路径 | 输入 | 返回/规则 |
 | --- | --- | --- |
-| `GET /proofing/public/items` | page、pageSize | 按 sortOrder、id 稳定分页；仅当前单，pageSize 最大 50 |
+| `GET /proofing/public/items` | page、pageSize | 按 sortOrder、id 稳定分页；返回当前页可见照片及短时 previewUrl，pageSize 最大 50 |
 | `PUT /proofing/public/items/{itemId}/selection` | selected、expectedVersion | 最新选择、selectedCount、version |
 | `PUT /proofing/public/items/{itemId}/annotation` | annotation、expectedVersion | 保存批注和新版本；annotation=null 表示删除 |
 | `POST /proofing/public/confirm` | requestId、expectedVersion | 固定快照的 id、数量、确认时间 |
 | `GET /proofing/public/submission` | 会话 header | 固定清单，未确认则返回明确状态 |
-| `POST /proofing/public/assets/{assetId}/access` | 会话 header | 短期 GET URL 和 expiresAt；受第 7 节白名单约束 |
+| `POST /proofing/public/assets/{assetId}/access` | 会话 header | 单张预览地址过期后重新签发短期 GET URL；受第 7 节白名单约束 |
 | `GET /proofing/public/delivery` | 会话 header | 是否已交付；已交付时返回 ZIP 资产 ID、大小、时间 |
 
-`GET items` 不返回内部 bucket/key、未交付 finalAssetId、员工身份或原图库 URL。明细响应最多包含客户可见的 previewAssetId；图片访问由 access 接口按需签发，可在同样校验下提供最多 50 个资产的批量签发接口作为后续优化。
+客户打开分享链接后，前端用链接令牌换短期会话，清除地址栏中的令牌，再请求当前项目和第一页明细；页面直接展示该页所有预览图。`GET items` 只对当前页授权，逐条校验资产属于该项目、状态为 READY、类型为 PREVIEW 且仍被当前可见 item 引用，再返回 `previewUrl` 和 `previewUrlExpiresAt`。默认每页 20 张、最多 50 张；翻页再请求下一页，不一次签发整单最多 300 张的地址。页面停留过久导致单张 URL 失效时，可调用 access 接口重新签发。
 
-客户 `GET items` 在 SELECTING 返回全部发布明细；CONFIRMED/DELIVERED 只返回 submission 中的已选快照项，与资产白名单保持一致。员工接口仍可查看完整内部明细，不能与客户接口共用无过滤的返回对象。
+`GET items` 不返回内部 bucket/key、未交付 finalAssetId、员工身份或原图库长期 URL。客户预览地址最长有效 10 分钟，也不超过会话和分享的剩余寿命；员工预览地址仍为 120 秒。即使同页有多张图，授权仍逐条按白名单校验。分享撤销或轮换不能提前撤回已经签发的 COS 地址，旧地址最多继续有效 10 分钟。
+
+客户 `GET items` 在 SELECTING 返回全部发布明细；CONFIRMED/DELIVERED 的最终实现应读取 submission 中的已选快照项，与资产白名单保持一致。当前第 3 阶段的临时实现只过滤 item.selected=1；第 4 阶段必须替换为固定快照查询。员工接口仍可查看完整内部明细，不能与客户接口共用无过滤的返回对象。
 
 所有 `{itemId}`、`{assetId}` 都要沿项目关系校验，不能拿到 ID 后就直接返回。公开接口不复用原 `PictureVO`。
 
@@ -503,7 +505,7 @@ JSON 示例是拟定契约，供开发时对齐，尚不是可调用接口：
 
 首版不向客户单独签发 FINAL 文件。员工访问也要检查当前私人空间所有权或团队成员关系、项目归属及 READY 状态。
 
-每次签发前检查会话、Redis 当前分享摘要、数据库项目状态和资产白名单；不接受客户端直接传 bucket/key。签名链接 TTL 最多 120 秒，且不能超过会话和分享链接剩余寿命。
+每次签发前检查会话、Redis 当前分享摘要、数据库项目状态和资产白名单；不接受客户端直接传 bucket/key。客户预览签名链接 TTL 最多 600 秒，且不能超过会话和分享链接剩余寿命；员工预览仍为 120 秒。
 
 撤销分享会立即阻止后续业务请求和新签名签发；已经签发的 URL 在到期前仍可能使用，已经下载的文件无法收回，已开始的传输也可能继续。产品文案应表述为“停止后续访问授权”，不能承诺把已下载文件撤回。
 
@@ -571,11 +573,11 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 | --- | --- | --- | --- | --- |
 | 1. 项目与空间权限 | 4～6 小时 | 空间所有者或团队成员能按权限创建并查看选片单 | 后端代码已写：创建、按空间分页列表、详情、仅 DRAFT 修改、关闭；修改与关闭锁项目行并检查版本。列表兼容 `page` 参数并校验继承的 `current` 字段。用户报告已执行建表 | 2026-09-24 独立输出目录离线编译和 `page=2` 参数绑定手动验证通过；JUnit 测试因本机未缓存 Surefire JUnit 平台而未执行。用户报告创建、列表、详情、草稿修改、旧版本冲突、关闭及越权请求均已完成；未留存具体响应与数据库记录，简单前端页面未确认 |
 | 2. 私有预览与发布 | 10～16 小时 | 可上传、浏览预览并发布选片 | 后端接口已写：私有桶管理器、asset/item 两张表和生成类，预览上传、员工 item 分页列表、授权签名访问、草稿图片移除、DRAFT→SELECTING 发布和资产清理；用户报告已建表。员工页面未确认 | 编译成功；图片处理 3 个定向测试通过。列表、签名访问、草稿移除、发布和清理代码仅通过编译；实际数据库结构、真实 COS 上传/删除、整条上传链路、并发与权限场景仍未验证 |
-| 3. 分享与客户选片 | 8～12 小时 | 客户能访问指定单并在上限内选片 | 员工生成/轮换和撤销链接已写；客户换会话接口已改为独立随机令牌、摘要 Key、绑定项目与当前分享摘要并限制 TTL，公开 Controller 路径已对齐。客户请求鉴权、只读接口和选片未实现；请求字段非空校验、分享过期时间输入契约仍待对齐 | 仅静态检查，未编译或连接 Redis 验证 |
+| 3. 分享与客户选片 | 8～12 小时 | 客户能访问指定单并在上限内选片 | 员工分享和客户换会话接口已写；客户会话鉴权、项目详情、分页图片、当前页签名地址、单张续签和 selected=true/false 选片代码已写。选片在项目行锁内校验状态、版本和上限，状态变化时同事务更新 item 与项目版本。确认后列表暂按 item.selected 过滤，第 4 阶段要改为 submission 快照。分享有效期契约已与固定 7 天实现对齐 | 2026-09-26 使用独立构建输出目录编译通过；并发、越权、真实 Redis/COS/数据库及 HTTP 链路未验收 |
 | 4. 批注与固定清单 | 8～12 小时 | 客户确认，摄影师看到固定修图清单 | 未开始 | 未验证 |
 | 5. 成片与交付包 | 12～20 小时 | 成片上传、打包、发布与客户下载 | 未开始 | 未验证 |
 
-**当前下一步：**继续第 3 阶段。分享状态只使用 Redis，不增加项目表分享字段。员工生成/轮换及撤销接口、客户换会话接口代码已写；先补 `publicId/shareToken` 字段非空校验，再实现客户每次请求的会话鉴权与项目只读接口。固定 7 天与手册约定的可选过期时间仍需在阶段 3 完成前对齐；代码未验证。第二阶段的真实数据库/COS 上传、授权看图、草稿移除、发布、私有桶匿名拒绝、失败清理和并发边界仍待验收；员工页面未确认，不把代码已写记为阶段验收通过。[第二阶段流程图](PROOFING-STAGE2-FLOW.md)可用于复习。
+**当前下一步：**继续第 3 阶段验收。客户 selected=true/false 选片代码已写并通过独立输出目录编译；验证重复设置相同状态、旧版本冲突、最后一个名额并发竞争、跨项目 itemId、分享撤销后访问，以及真实 Redis/COS/数据库和 HTTP 链路。客户选片页面未确认。分享有效期已与固定 7 天实现对齐。第二阶段的真实数据库/COS 上传、授权看图、草稿移除、发布、私有桶匿名拒绝、失败清理和并发边界仍待验收；员工页面未确认，不把代码已写记为阶段验收通过。[第二阶段流程图](PROOFING-STAGE2-FLOW.md)和[第三阶段流程图](PROOFING-STAGE3-FLOW.md)可用于复习。
 
 建表脚本建议分别保存为 `src/main/resources/sql/create_proofing_project.sql`、`create_proofing_asset.sql`、`create_proofing_item.sql`、`create_proofing_submission.sql`、`create_proofing_delivery_task.sql`。文件按阶段创建，并在专用测试库检查实际结构；已有数据库的后续变更另写 ALTER 迁移，不能以 `CREATE TABLE IF NOT EXISTS` 当作自动升级。
 
@@ -617,6 +619,8 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 
 **本阶段只回答：客户只能操作这一单，而且选片上限在并发下仍有效吗？**
 
+分享换会话、预览授权及并发选片的代码流程见[第三阶段 Mermaid 流程图](PROOFING-STAGE3-FLOW.md)；两页可编辑的整体图见[第三阶段 draw.io 流程图](assets/proofing-stage3.drawio)。
+
 1. 用 Redis 单项目分享记录实现生成/轮换/撤销，再实现随机令牌摘要和客户会话；不改项目表。
 2. 实现客户项目详情和分页图片列表，使用独立 VO；预览访问只允许当前单的白名单资产。
 3. 实现显式 selected 布尔值、项目行锁和 expectedVersion 检查；同事务校验上限并保存。
@@ -628,11 +632,21 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 
 **第一小步（约 30 分钟）：**先写单项目 Redis 分享记录的生成/覆盖/删除与 TTL；客户会话在下一小步实现，其他客户写操作仍关闭。
 
-**2026-09-25 进度：**员工生成/轮换链接已写入代码：随机令牌明文只返回响应，Redis 按项目 ID 保存 SHA-256 摘要并设置 7 天 TTL；本机配置中已有前端地址。用户已把非事务中的 `SELECT FOR UPDATE` 改为普通项目查询，并将 Controller 路径改为第 5.3 节约定的 `/{projectId}/share`。撤销接口也已写入：从数据库项目反查真实空间、校验 `proofing:manage`，删除相同 Redis Key，Key 原本不存在时仍返回成功；静态核对通过。固定 7 天与第 5.3 节的 `expiresAt` 输入尚未对齐。未运行编译、Redis 或 HTTP 验证，不记为本小步验收通过。
+**2026-09-25 进度：**员工生成/轮换链接已写入代码：随机令牌明文只返回响应，Redis 按项目 ID 保存 SHA-256 摘要并设置 7 天 TTL；本机配置中已有前端地址。用户已把非事务中的 `SELECT FOR UPDATE` 改为普通项目查询，并将 Controller 路径改为第 5.3 节约定的 `/{projectId}/share`。撤销接口也已写入：从数据库项目反查真实空间、校验 `proofing:manage`，删除相同 Redis Key，Key 原本不存在时仍返回成功；静态核对通过。当时固定 7 天与第 5.3 节的 `expiresAt` 输入尚未对齐，现已把手册契约改为固定 7 天。未运行编译、Redis 或 HTTP 验证，不记为本小步验收通过。
 
 **客户会话初稿静态检查：**请求 DTO 已含 `publicId`、`sharedToken`，Service 可按 `publicId` 找项目并比较当前分享摘要。但当前会话令牌是 `Base64(publicId)`，任何知道链接定位符的人都能推算，必须改为独立的 32 字节安全随机数；Redis 会话 Key 目前按 `publicId` 命名且无 TTL，必须改为按会话令牌摘要命名、值绑定 `projectId` 与当前分享摘要、TTL 不超过 30 分钟和分享剩余时间。当前客户接口写在 `/proofing/projects` Controller 下，实际路径会多一段 `/proofing/projects`，需移到公开 Controller 或调整类级路由。还需在换会话时检查项目状态。该接口尚不能作为客户鉴权使用，也未运行编译或 HTTP 验证。
 
 **2026-09-26 静态复核：**用户已将客户会话令牌改为独立的 32 字节安全随机数，Redis Key 改为会话令牌摘要，Value 保存 `projectId:currentShareHash`，TTL 取 30 分钟与分享剩余寿命中的较短值；公开 Controller 路径已为 `/proofing/public/session`，并检查项目处于可访问状态。仍需对请求中的 `publicId`、`shareToken` 做字段级非空校验。当前没有客户请求鉴权入口，故不能把“可换会话”记为“可访问客户数据”；未运行编译、Redis 或 HTTP 验证。
+
+**2026-09-26 客户只读接口骨架：**`ProofingPublicController` 已有 `GET /project`、`GET /items`、`POST /assets/{assetId}/access`，统一读取 `X-Proofing-Session` 并设置 `Cache-Control: no-store`；增加客户专用项目和 item VO，并接入 `ProofingPublicReadService` 的三个待实现方法。Service 目前明确返回 501，不能记为客户可读取图片。用户的 `requireCustomerProject` 初稿仍是私有 `void`，使用 `request.getAttribute` 而非请求头，且对 Redis Value 的格式和空值没有完整保护；接业务前需修正并返回项目。换会话请求字段非空校验已在源码中补齐。本次 `git diff --check` 通过；Maven 编译因已有 `target/classes/application.yml` 与 `target/maven-status/.../createdFiles.lst` 访问被拒绝而未完成，未运行 Redis/HTTP 验证。
+
+**2026-09-26 页面展示调整：**客户进入项目后直接看到当前页的全部预览图；分页响应带当前页每张图的短时签名 URL 和过期时间，单张 access 接口用于过期后的重新签发。已把字段加到客户 item VO 并更新第 5.4 节契约；分页查询、资产校验、签名映射和会话校验代码已写，单张重新签发仍未实现，不记为完整图片访问链路已验收。
+
+**2026-09-26 客户列表修正：**客户预览签名上限改为 600 秒，员工接口继续使用 120 秒；实际客户 TTL 取 600 秒、会话剩余时间和分享剩余时间的最小值。分页限制为每页最多 50 条并按 sortOrder、id 稳定排序；签名前检查资产属于当前项目且为 READY PREVIEW，显式映射客户 VO 的 ID 与 selected 字段；会话解析不再依赖 assert。CONFIRMED/DELIVERED 暂只显示已选 item，待第 4 阶段改成 submission 固定快照。使用独立输出目录执行 Maven 编译通过，`git diff --check` 通过；未进行真实 Redis、COS、数据库或 HTTP 验证。
+
+**2026-09-26 单张预览续签：**`POST /proofing/public/assets/{assetId}/access` 已接通 `signPreview`：根据客户会话定位项目，只为该项目中当前可见 item 引用的 READY PREVIEW 资产签发短时地址；列表和续签共用资产校验与签名方法。`ProofingAssetAccessVO` 只包含本次地址和过期时间，分页 `ProofingPublicItemVO` 才包含照片明细。独立输出目录编译通过；真实 Redis、数据库、COS 和 HTTP 场景未验收。
+
+**2026-09-26 客户选片修正：**用户初稿已有 Controller、DTO、VO 和事务方法，但更新链使用 `getEntity()`，未执行 SQL，也缺少项目锁和选择上限检查。现已在同一事务内根据会话定位项目并锁项目行，校验 SELECTING、expectedVersion、item 归属与 selectionLimit；实际更新 item 和项目版本，状态未变化时不递增版本。返回选择状态、已选数量、剩余额度与最新版本。独立输出目录 Maven 编译通过；尚未用数据库验证行锁、并发竞争、回滚或 HTTP 响应。
 
 ### 9.5 阶段 4：批注与固定清单
 

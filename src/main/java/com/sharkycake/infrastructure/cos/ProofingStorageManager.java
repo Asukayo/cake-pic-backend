@@ -63,8 +63,8 @@ public class ProofingStorageManager {
 
     /** 使用资产记录中的桶名签名，避免换桶后把旧资产签到新桶。 */
     public String signGet(String bucket, String key, int ttlSeconds) {
-        ThrowUtils.throwIf(ttlSeconds < 1 || ttlSeconds > 120,
-                ErrorCode.PARAMS_ERROR, "有效期必须为 1～120 秒");
+        ThrowUtils.throwIf(ttlSeconds < 1 || ttlSeconds > 600,
+                ErrorCode.PARAMS_ERROR, "有效期必须为 1～600 秒");
 
         Date expiration = new Date(System.currentTimeMillis() + ttlSeconds * 1000L);
         return cosClient.generatePresignedUrl(

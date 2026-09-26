@@ -8,6 +8,7 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import cn.hutool.core.lang.UUID;
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.digest.DigestUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -82,8 +83,8 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
             "expectedVersion", v -> v instanceof Long && (Long) v >= 0
     );
 
-    private static final String PROOF_SHARING_PREFIX = "proofing:share:";
-    private static final String PROOF_USER_SESSION_PREFIX = "proofing:session:";
+    public static final String PROOF_SHARING_PREFIX = "proofing:share:";
+    public static final String PROOF_USER_SESSION_PREFIX = "proofing:session:";
     private static final SecureRandom SHARE_RANDOM = new SecureRandom();
 
     @Value("${proofing.shareBaseUrl}")
@@ -452,10 +453,6 @@ public class ProofingProjectServiceImpl extends ServiceImpl<ProofingProjectMappe
         result.setProjectId(String.valueOf(project.getId()));
         return result;
     }
-
-
-
-
     /**
      * 用来对dto进行参数校验
      */
