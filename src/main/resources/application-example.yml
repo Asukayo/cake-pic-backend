@@ -43,7 +43,7 @@ spring:
       group-id: picture-cleanup-group
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      # 关闭自动提交，业务处理成功后手动 ACK
+      # 关闭自动提交；监听容器按 record 模式在记录处理成功后提交 offset
       enable-auto-commit: false
       auto-offset-reset: earliest
     listener:
@@ -53,6 +53,10 @@ server:
   port: 8123
   servlet:
     context-path: /api
+
+# 摄影选片分享页的前端地址；链接会拼接 /proofing/{publicId}#token=...
+proofing:
+  shareBaseUrl: ${PROOFING_SHARE_BASE_URL:http://localhost:3000}
 
 mybatis-plus:
   configuration:
@@ -79,6 +83,7 @@ knife4j:
           - com.sharkycake.user.controller
           - com.sharkycake.space.controller
           - com.sharkycake.picture.controller
+          - com.sharkycake.proofing.controller
           - com.sharkycake.common.controller
 
 # 腾讯云 COS：建议改用环境变量注入，避免写入配置文件

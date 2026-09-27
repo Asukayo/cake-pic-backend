@@ -8,6 +8,7 @@ import com.sharkycake.proofing.dto.*;
 import com.sharkycake.proofing.service.ProofingAssetService;
 import com.sharkycake.proofing.service.ProofingItemService;
 import com.sharkycake.proofing.service.ProofingProjectService;
+import com.sharkycake.proofing.service.ProofingSubmissionService;
 import com.sharkycake.proofing.upload.ProofingPreviewUploadService;
 import com.sharkycake.proofing.vo.*;
 import com.sharkycake.user.entity.User;
@@ -29,17 +30,20 @@ public class ProofingProjectController {
     private final ProofingProjectService proofingProjectService;
     private final ProofingAssetService proofingAssetService;
     private final ProofingItemService proofingItemService;
+    private final ProofingSubmissionService proofingSubmissionService;
     private final ProofingPreviewUploadService previewUploadService;
     private final UserService userService;
 
     public ProofingProjectController(ProofingProjectService proofingProjectService,
                                     ProofingAssetService proofingAssetService,
                                     ProofingItemService proofingItemService,
+                                    ProofingSubmissionService proofingSubmissionService,
                                     ProofingPreviewUploadService previewUploadService,
                                     UserService userService) {
         this.proofingProjectService = proofingProjectService;
         this.proofingAssetService = proofingAssetService;
         this.proofingItemService = proofingItemService;
+        this.proofingSubmissionService = proofingSubmissionService;
         this.previewUploadService = previewUploadService;
         this.userService = userService;
     }
@@ -115,6 +119,17 @@ public class ProofingProjectController {
             HttpServletRequest httpServletRequest) {
         User loginUser = userService.getLoginUser(httpServletRequest);
         return ResultUtils.success(proofingItemService.listProjectItems(id, page, pageSize, loginUser));
+    }
+
+    /** 员工按项目权限读取客户确认时固定的修图清单。 */
+    @GetMapping("/{id}/submission")
+    public BaseResponse<ProofingSubmissionVO> getSubmission(
+            @PathVariable("id") Long id,
+            HttpServletRequest httpServletRequest,
+            HttpServletResponse httpServletResponse) {
+        User loginUser = userService.getLoginUser(httpServletRequest);
+        httpServletResponse.setHeader("Cache-Control", "no-store");
+        return ResultUtils.success(proofingSubmissionService.getAuthorizedSnapshot(id, loginUser));
     }
 
     /**

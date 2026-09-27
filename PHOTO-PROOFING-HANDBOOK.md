@@ -92,7 +92,7 @@ flowchart LR
 
 当前 `proofing` Java 代码已有项目、asset、item 的实体、Mapper、Service；项目 Controller、上传接口和权限入口已写，私有桶管理器有上传、删除、短时 GET 签名方法。asset、item 的建表脚本与生成映射已静态核对，用户报告两表已建；本次未连接数据库独立核对表结构。单张预览上传的非事务编排、三个短事务方法和事务外图片处理已写：新增 `metadata-extractor` 读取 EXIF 朝向，JDK ImageIO 解码、缩放、重编码为 JPEG 并生成摘要；COS 上传显式设置 `image/jpeg`。上传接口返回 item 标识与本次提交后的项目版本，不暴露 bucket/objectKey；multipart 单文件限 20 MiB、请求限 21 MiB。2026-09-25 编译成功，图片处理的 3 个定向测试通过；真实数据库、COS 和整条上传链路尚未验证。submission、delivery_task、分享会话和 ZIP Worker 均未实现。生成的 Asset Service 曾残留错误的 `generator.domain.ProofingAsset` 导入，已改为实际包名。
 
-AGENTS.md 提到的 `docs/kafka-integration-plan.md`、`docs/kafka-integration-context.md` 在本次工作区不存在；本文不补造其历史验证结果。后续若恢复 Kafka 教学，应先找到或补充真实上下文。
+早期 Kafka 教学计划所用的 `docs/kafka-integration-plan.md`、`docs/kafka-integration-context.md` 在本次工作区不存在；本文不补造其历史验证结果。后续若恢复 Kafka 教学，应先核对当前源码与已有记录。
 
 ### 2.2 新增模块
 
@@ -419,13 +419,13 @@ JSON 示例是拟定契约，供开发时对齐，尚不是可调用接口：
 | `POST /proofing/public/assets/{assetId}/access` | 会话 header | 单张预览地址过期后重新签发短期 GET URL；受第 7 节白名单约束 |
 | `GET /proofing/public/delivery` | 会话 header | 是否已交付；已交付时返回 ZIP 资产 ID、大小、时间 |
 
-客户打开分享链接后，前端用链接令牌换短期会话，清除地址栏中的令牌，再请求当前项目和第一页明细；页面直接展示该页所有预览图。`GET items` 只对当前页授权，逐条校验资产属于该项目、状态为 READY、类型为 PREVIEW 且仍被当前可见 item 引用，再返回 `previewUrl` 和 `previewUrlExpiresAt`。默认每页 20 张、最多 50 张；翻页再请求下一页，不一次签发整单最多 300 张的地址。页面停留过久导致单张 URL 失效时，可调用 access 接口重新签发。
+客户打开分享链接后，前端用链接令牌换短期会话，清除地址栏中的令牌，再请求当前项目和第一页明细；页面直接展示该页所有预览图。`GET items` 只对当前页授权，逐条校验资产属于该项目、状态为 READY、类型为 PREVIEW；SELECTING 时按当前项目 item 引用判定可见性，CONFIRMED/DELIVERED 时按 submission 快照中的 previewAssetId 判定，再返回 `previewUrl` 和 `previewUrlExpiresAt`。默认每页 20 张、最多 50 张；翻页再请求下一页。页面停留过久导致单张 URL 失效时，可调用 access 接口重新签发。
 
 批注接口把每次明确的保存请求视为一次写入，即使内容与原值相同，也在版本匹配时递增版本；重复携带旧版本的请求返回冲突。客户端保存成功后使用返回的 `currentVersion`，不承诺批注保存请求幂等。`GET items` 在 SELECTING 返回已保存批注供刷新后继续编辑。
 
 `GET items` 不返回内部 bucket/key、未交付 finalAssetId、员工身份或原图库长期 URL。客户预览地址最长有效 10 分钟，也不超过会话和分享的剩余寿命；员工预览地址仍为 120 秒。即使同页有多张图，授权仍逐条按白名单校验。分享撤销或轮换不能提前撤回已经签发的 COS 地址，旧地址最多继续有效 10 分钟。
 
-客户 `GET items` 在 SELECTING 返回全部发布明细；CONFIRMED/DELIVERED 的最终实现应读取 submission 中的已选快照项，与资产白名单保持一致。当前第 3 阶段的临时实现只过滤 item.selected=1；第 4 阶段必须替换为固定快照查询。员工接口仍可查看完整内部明细，不能与客户接口共用无过滤的返回对象。
+客户 `GET items` 在 SELECTING 返回全部发布明细；CONFIRMED/DELIVERED 从 submission 的已选快照分页，项目已选数量和单张预览续签也以快照为准。快照数组顺序用于分页，列表响应中的 sortOrder 是数组下标，不读取实时 item 的排序和批注。客户和员工各有固定清单读取接口；员工原有明细接口仍可查看完整内部明细。
 
 所有 `{itemId}`、`{assetId}` 都要沿项目关系校验，不能拿到 ID 后就直接返回。公开接口不复用原 `PictureVO`。
 
@@ -602,11 +602,13 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 | --- | --- | --- | --- | --- |
 | 1. 项目与空间权限 | 4～6 小时 | 空间所有者或团队成员能按权限创建并查看选片单 | 后端代码已写：创建、按空间分页列表、详情、仅 DRAFT 修改、关闭；修改与关闭锁项目行并检查版本。列表兼容 `page` 参数并校验继承的 `current` 字段。用户报告已执行建表 | 2026-09-24 独立输出目录离线编译和 `page=2` 参数绑定手动验证通过；JUnit 测试因本机未缓存 Surefire JUnit 平台而未执行。用户报告创建、列表、详情、草稿修改、旧版本冲突、关闭及越权请求均已完成；未留存具体响应与数据库记录，简单前端页面未确认 |
 | 2. 私有预览与发布 | 10～16 小时 | 可上传、浏览预览并发布选片 | 后端接口已写：私有桶管理器、asset/item 两张表和生成类，预览上传、员工 item 分页列表、授权签名访问、草稿图片移除、DRAFT→SELECTING 发布和资产清理；用户报告已建表。员工页面未确认 | 编译成功；图片处理 3 个定向测试通过。列表、签名访问、草稿移除、发布和清理代码仅通过编译；实际数据库结构、真实 COS 上传/删除、整条上传链路、并发与权限场景仍未验证 |
-| 3. 分享与客户选片 | 8～12 小时 | 客户能访问指定单并在上限内选片 | 员工分享和客户换会话接口已写；客户会话鉴权、项目详情、分页图片、当前页签名地址、单张续签和 selected=true/false 选片代码已写。选片在项目行锁内校验状态、版本和上限，状态变化时同事务更新 item 与项目版本。确认后列表暂按 item.selected 过滤，第 4 阶段要改为 submission 快照。分享有效期契约已与固定 7 天实现对齐 | 2026-09-26 使用独立构建输出目录编译通过；并发、越权、真实 Redis/COS/数据库及 HTTP 链路未验收 |
-| 4. 批注与固定清单 | 8～12 小时 | 客户确认，摄影师看到固定修图清单 | manifest、submission 建表脚本及持久化骨架已写；客户批注保存/清空、分页读回、取消选片清空批注的后端代码已写。确认事务、固定快照读取和页面尚未实现 | 独立输出目录离线 Maven 编译与 `git diff --check` 通过；真实数据库、Redis、COS、HTTP、并发及矩形页面验收未执行 |
-| 5. 成片与交付包 | 12～20 小时 | 成片上传、打包、发布与客户下载 | 未开始 | 未验证 |
+| 3. 分享与客户选片 | 8～12 小时 | 客户能访问指定单并在上限内选片 | 员工分享和客户换会话接口已写；客户会话鉴权、项目详情、分页图片、当前页签名地址、单张续签和 selected=true/false 选片代码已写。选片在项目行锁内校验状态、版本和上限，状态变化时同事务更新 item 与项目版本。确认后列表已在第 4 阶段改为 submission 快照。分享有效期契约已与固定 7 天实现对齐 | 2026-09-26 使用独立构建输出目录编译通过；并发、越权、真实 Redis/COS/数据库及 HTTP 链路未验收 |
+| 4. 批注与固定清单 | 8～12 小时 | 客户确认，摄影师看到固定修图清单 | manifest、submission 表脚本及持久化骨架、批注后端读写、首次确认事务和同 requestId 重试代码已写。客户/员工固定清单读取、确认后客户列表/计数/预览续签按快照读取的后端代码已写；前端页面尚未实现 | 独立输出目录离线 Maven 编译与 `git diff --check` 通过；submission 建表执行、真实数据库、Redis、COS、HTTP、并发、越权及矩形页面验收未执行 |
+| 5. 成片与交付包（暂缓） | 12～20 小时 | 成片上传、打包、发布与客户下载 | 按用户决定暂缓，未开始 | 未验证 |
 
-**当前下一步：**实现第 4 阶段的确认事务与 requestId 幂等，再把确认后的客户和员工读取切到 submission。客户批注读写代码已写并通过编译，真实数据库 JSON 保存/读回及 HTTP 验证仍待做。第 3 阶段的真实 Redis、数据库、COS、HTTP、并发及越权验收和第二阶段真实上传、签名、清理与私有桶验证也仍待补做。[第二阶段流程图](PROOFING-STAGE2-FLOW.md)和[第三阶段流程图](PROOFING-STAGE3-FLOW.md)可用于复习。
+**2026-09-27 作品分类与标签展示调整：**`GET /api/pic/tag_category` 的固定选项已增加摄影分类和标签，并将其排在原有选项前；旧选项保留以兼容已有图片的筛选。该接口不从数据库统计标签，本次也未改写历史图片的分类或标签。代码已改且 `git diff --check` 通过，尚未进行 HTTP 验证；不改变第 4 阶段的验收状态。
+
+**当前下一步：**先在专用测试库核对 submission 表并验证确认事务的首次请求、相同 requestId 重试、不同 requestId 冲突和事务回滚；再验证确认后的客户/员工快照读取、签名白名单与越权。批注、确认和固定清单读取后端已写并通过编译，真实 Redis、数据库、COS、HTTP、并发及前端页面均待验收。第 3 阶段的分享/选片并发和第二阶段真实上传、签名、清理与私有桶验证也仍待补做。第 5 阶段按用户决定暂缓，本轮不启动。[第二阶段流程图](PROOFING-STAGE2-FLOW.md)和[第三阶段流程图](PROOFING-STAGE3-FLOW.md)可用于复习。
 
 建表脚本建议分别保存为 `src/main/resources/sql/create_proofing_project.sql`、`create_proofing_asset.sql`、`create_proofing_item.sql`、`create_proofing_submission.sql`、`create_proofing_delivery_task.sql`。文件按阶段创建，并在专用测试库检查实际结构；已有数据库的后续变更另写 ALTER 迁移，不能以 `CREATE TABLE IF NOT EXISTS` 当作自动升级。
 
@@ -696,7 +698,17 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 
 **2026-09-26 工作块 2：批注后端读写闭环。**用户完成客户批注接口：校验会话、批注文字和可选矩形，先对项目状态与 expectedVersion 做条件更新，再读取当前项目已选 item 并写入 JSON 字符串；同一事务中若 item 不存在则回滚项目版本。`GET items` 已把 JSON 解析为批注对象，取消选片继续清空批注。按用户选择，相同内容的明确保存也推进版本，不增加旧值比较；助手补齐入口参数校验、写响应 `Cache-Control: no-store` 和少量注释。独立输出目录离线 Maven 编译成功（200 个源文件），`git diff --check` 通过；临时构建文件已清理。仅能确认代码已写且可编译，尚未用真实数据库验证 JSON 读写/事务回滚，也未完成 Redis、HTTP、并发和前端矩形留白坐标验收。下一块：确认事务、同 requestId 重试与不可变 manifest。
 
-### 9.6 阶段 5：成片与交付包
+**2026-09-26 工作块 3 部分进度：确认入口纠错。**按用户要求只修正已写部分，未补齐首次确认：先校验客户会话与请求，再锁项目行、按 `projectId` 查询唯一 submission；相同 requestId 从整个 `ProofingManifest` 取得数量并返回原 submission ID/确认时间，不同 requestId 返回 40904。首次确认分支仍明确返回“尚未实现”，不会写项目状态或快照；确认响应改为 submissionId、selectedCount、confirmedAt，公开接口补 `Cache-Control: no-store`。独立输出目录离线 Maven 编译成功（201 个源文件）；真实数据库、并发和 HTTP 未验证。下一步由用户实现 SELECTING/版本/已选项与资产校验、快照插入及状态更新的同一事务。
+
+**2026-09-26 工作块 3 代码补全：首次确认事务。**用户请求补齐 manifest 写入时，发现现有分支在检查版本、数量和资产前先改状态，且对空 submission 直接赋值。现改为项目行锁下先处理已存在 submission 的 requestId 幂等，再对首次确认检查 SELECTING 与 expectedVersion；按 `sortOrder,id` 读取已选 item，检查数量及同项目 READY PREVIEW 的尺寸，解析批注，生成只含固定字段的 manifest。事务内先插入 submission，再按状态和版本条件更新项目为 CONFIRMED 并递增版本；任一步失败回滚。submission 查询使用 `FOR UPDATE` 当前读，避免 MySQL 可重复读事务沿用会话校验时的旧快照，漏看先提交的确认记录。独立输出目录离线 Maven 编译成功（201 个源文件），未运行建表、真实 MySQL、Redis、COS、HTTP 或并发测试，不能记为确认功能已验收。下一块：确认后的客户/员工读取必须改用 submission 快照，并做 C02/C03/A05 的真实环境验证。
+
+**2026-09-26 工作块 4：固定清单后端读取。**新增 `GET /proofing/public/submission` 和 `GET /proofing/projects/{id}/submission`，前者校验客户会话与分享，后者校验员工对项目空间的查看权限；响应只含 submissionId、confirmedAt 和 manifest items，不返回 requestId、bucket/key。客户项目已选数、确认后的分页列表及单张预览续签改从不可变 manifest 读取；签名时仍校验同项目 READY PREVIEW 资产，SELECTING 阶段继续读取实时 item。顺手补回批注入口的 itemId、request、expectedVersion 空值校验。独立输出目录离线 Maven 编译成功（202 个源文件），`git diff --check` 通过；临时构建文件已清理。仅确认代码已写且可编译，submission 建表、真实 MySQL/Redis/COS、HTTP、越权、并发和前端页面均未验收。下一块：在测试环境逐项验证确认事务和固定快照读取，再做确认页、摄影师修图清单与矩形坐标页面。
+
+**2026-09-27 工作块 5：前端接口交接文档。**依据当前 Controller、DTO、VO、Service 新增 `PROOFING-FRONTEND-API.md`，列出阶段 1～4 已写的员工与客户接口、权限、字段、状态、调用顺序和错误码，并把第 5 阶段接口排除。静态核对发现全局 CORS 尚未允许跨域 `PATCH`，已在对接文档标为待处理；本工作块只整理文档，没有运行 HTTP、跨域或依赖服务验证，也没有改变已有业务代码。下一步仍是专用测试环境中验证确认事务、固定清单读取及权限，再完成前端页面。
+
+### 9.6 阶段 5：成片与交付包（暂缓）
+
+**状态：按用户决定暂缓，尚未开始实现或验证。**以下步骤保留作以后恢复时的参考，本轮只推进第 4 阶段及此前未完成的验收。
 
 **本阶段只回答：客户能否拿到与确认清单一致的完整成片包？**
 
@@ -736,7 +748,7 @@ ACK 表示消息已转交给持久化任务处理规则：只有数据库状态�
 
 测试数据不得使用未获允许的人像、客户私密资料或真实分享凭证。并发与故障测试使用独立测试库、测试桶和测试 topic。
 
-现有 [MODULES.md](MODULES.md) 记录了 Maven 测试依赖和集成测试限制；重新验证当时的环境问题是否仍存在，不把 `mvn test` 启动失败写成测试通过。不要直接执行会删除已有数据库内容的旧测试。
+早期模块重构记录曾提到 Maven 测试依赖和集成测试限制；重新验证当时的环境问题是否仍存在，不把 `mvn test` 启动失败写成测试通过。不要直接执行会删除已有数据库内容的旧测试。
 
 ### 10.2 主流程
 

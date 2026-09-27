@@ -20,10 +20,12 @@ public class ProofingSubmission implements Serializable {
     @TableField("projectId")
     private Long projectId;
 
+    // 客户端为一次确认生成 UUID，网络重试保持不变
     @TableField("requestId")
     private String requestId;
 
     /** 由确认事务生成；数据库 JSON 列由 JDBC 按字符串读写。 */
+    // 包含item数组，只包含已选定照片
     @TableField("manifestJson")
     private String manifestJson;
 

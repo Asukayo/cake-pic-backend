@@ -11,10 +11,13 @@ import com.sharkycake.common.exception.ThrowUtils;
 import com.sharkycake.infrastructure.cos.ProofingStorageManager;
 import com.sharkycake.proofing.dto.ProofingAnnotation;
 import com.sharkycake.proofing.dto.ProofingAnnotationRequest;
+import com.sharkycake.proofing.dto.ProofingConfirmRequest;
+import com.sharkycake.proofing.dto.ProofingManifest;
 import com.sharkycake.proofing.dto.ProofingProjectSelectRequest;
 import com.sharkycake.proofing.entity.ProofingAsset;
 import com.sharkycake.proofing.entity.ProofingItem;
 import com.sharkycake.proofing.entity.ProofingProject;
+import com.sharkycake.proofing.entity.ProofingSubmission;
 import com.sharkycake.proofing.enums.ProjectStatus;
 import com.sharkycake.proofing.mapper.ProofingProjectMapper;
 import com.sharkycake.proofing.vo.*;
@@ -22,7 +25,9 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -43,6 +48,7 @@ public class ProofingPublicReadService {
     private final ProofingAssetService proofingAssetService;
     private final ProofingStorageManager proofingStorageManager;
     private final ObjectMapper objectMapper;
+    private final ProofingSubmissionService proofingSubmissionService;
 
     public ProofingPublicReadService(StringRedisTemplate redisTemplate,
                                      ProofingProjectService proofingProjectService,
@@ -50,7 +56,7 @@ public class ProofingPublicReadService {
                                      ProofingItemService proofingItemService,
                                      ProofingAssetService proofingAssetService,
                                      ProofingStorageManager proofingStorageManager,
-                                     ObjectMapper objectMapper) {
+                                     ObjectMapper objectMapper, ProofingSubmissionService proofingSubmissionService) {
         this.redisTemplate = redisTemplate;
         this.proofingProjectService = proofingProjectService;
         this.proofingProjectMapper = proofingProjectMapper;
@@ -58,16 +64,17 @@ public class ProofingPublicReadService {
         this.proofingAssetService = proofingAssetService;
         this.proofingStorageManager = proofingStorageManager;
         this.objectMapper = objectMapper;
+        this.proofingSubmissionService = proofingSubmissionService;
     }
 
 
     /** 使用客户会话读取当前项目，不接受客户端提供项目 ID。 */
     public ProofingPublicProjectVO getProject(String sessionToken) {
-        // 校验token是否合法
         ProofingProject project = requireCustomerProject(sessionToken);
-        // 查询当前project数据并返回,其中还有selectedCount需要查询Item表
-        Long selected = proofingItemService.lambdaQuery().eq(ProofingItem::getProjectId, project.getId())
-                .eq(ProofingItem::getSelected, 1).count();
+        Long selected = ProjectStatus.SELECTING.name().equals(project.getStatus())
+                ? proofingItemService.lambdaQuery().eq(ProofingItem::getProjectId, project.getId())
+                    .eq(ProofingItem::getSelected, 1).count()
+                : (long) proofingSubmissionService.getSnapshot(project.getId()).getItems().size();
         ProofingPublicProjectVO vo = new ProofingPublicProjectVO();
         vo.setProjectId(String.valueOf(project.getId()));
         vo.setTitle(project.getTitle());
@@ -78,6 +85,14 @@ public class ProofingPublicReadService {
         return vo;
     }
 
+    /** 客户会话只允许读取所属项目的确认快照。 */
+    public ProofingSubmissionVO getSubmission(String sessionToken) {
+        ProofingProject project = requireCustomerProject(sessionToken);
+        ThrowUtils.throwIf(ProjectStatus.SELECTING.name().equals(project.getStatus()),
+                new BusinessException(40902, "选单尚未确认"));
+        return proofingSubmissionService.getSnapshot(project.getId());
+    }
+
     /** 返回当前页允许客户查看的明细和短时预览地址。 */
     public Page<ProofingPublicItemVO> listItems(String sessionToken, long page, long pageSize) {
         ThrowUtils.throwIf(page < 1 || pageSize < 1 || pageSize > 50,
@@ -85,12 +100,29 @@ public class ProofingPublicReadService {
         // 依旧校验是否合法
         ProofingProject project = requireCustomerProject(sessionToken);
         int ttlSeconds = previewTtlSeconds(sessionToken, project.getId());
-        // 分页查询当前页所有item数据
         Page<ProofingPublicItemVO> result = new Page<>(page, pageSize);
+        if (!ProjectStatus.SELECTING.name().equals(project.getStatus())) {
+            // 确认后只按 manifest 的固定顺序、字段和批注返回照片。
+            List<ProofingManifest.Item> items = proofingSubmissionService
+                    .getSnapshot(project.getId()).getItems();
+            result.setTotal(items.size());
+            if (items.isEmpty() || page > (items.size() - 1) / pageSize + 1) {
+                result.setRecords(new ArrayList<>());
+                return result;
+            }
+            int from = (int) ((page - 1) * pageSize);
+            int to = (int) Math.min(from + pageSize, items.size());
+            List<ProofingPublicItemVO> records = new ArrayList<>(to - from);
+            for (int i = from; i < to; i++) {
+                records.add(toPublicItemVO(items.get(i), i, project.getId(), ttlSeconds));
+            }
+            result.setRecords(records);
+            return result;
+        }
+
+        // 选择中仍读取实时 item，供客户继续选片和修改批注。
         Page<ProofingItem> itemPage = proofingItemService.lambdaQuery()
                 .eq(ProofingItem::getProjectId, project.getId())
-                // 如果选单确认后只展示已选照片；固定快照将在下一阶段替换这里的查询。
-                .eq(!ProjectStatus.SELECTING.name().equals(project.getStatus()), ProofingItem::getSelected, 1)
                 .orderByAsc(ProofingItem::getSortOrder, ProofingItem::getId)
                 .page(new Page<>(page, pageSize));
         result.setTotal(itemPage.getTotal());
@@ -105,14 +137,19 @@ public class ProofingPublicReadService {
     public ProofingAssetAccessVO signPreview(String sessionToken, Long assetId) {
         ThrowUtils.throwIf(assetId == null || assetId <= 0, ErrorCode.PARAMS_ERROR, "资产 ID 不合法");
         ProofingProject project = requireCustomerProject(sessionToken);
-        // 资产必须仍被当前项目中客户可见的 item 引用。
+        int ttlSeconds = previewTtlSeconds(sessionToken, project.getId());
+        if (!ProjectStatus.SELECTING.name().equals(project.getStatus())) {
+            boolean visible = proofingSubmissionService.getSnapshot(project.getId()).getItems()
+                    .stream().anyMatch(item -> String.valueOf(assetId).equals(item.getPreviewAssetId()));
+            ThrowUtils.throwIf(!visible, ErrorCode.NOT_FOUND_ERROR, "预览图片不存在");
+            return signPreviewAsset(assetId, project.getId(), ttlSeconds);
+        }
+        // 选择中，资产必须仍被当前项目中的 item 引用。
         ProofingItem item = proofingItemService.lambdaQuery()
                 .eq(ProofingItem::getProjectId, project.getId())
                 .eq(ProofingItem::getPreviewAssetId, assetId)
-                .eq(!ProjectStatus.SELECTING.name().equals(project.getStatus()), ProofingItem::getSelected, 1)
                 .one();
         ThrowUtils.throwIf(item == null, ErrorCode.NOT_FOUND_ERROR, "预览图片不存在");
-        int ttlSeconds = previewTtlSeconds(sessionToken, project.getId());
         return signVisiblePreview(item, project.getId(), ttlSeconds);
     }
 
@@ -175,7 +212,28 @@ public class ProofingPublicReadService {
         vo.setPreviewUrl(access.getUrl());
         vo.setPreviewUrlExpiresAt(access.getExpiresAt());
         // 增加Annotation
-        vo.setAnnotation(parseAnnotation(item.getAnnotation()));
+        vo.setAnnotation(parseObject(item.getAnnotation(),ProofingAnnotation.class));
+        return vo;
+    }
+
+    private ProofingPublicItemVO toPublicItemVO(ProofingManifest.Item item, int index,
+                                                Long projectId, int ttlSeconds) {
+        Long assetId;
+        try {
+            assetId = Long.valueOf(item.getPreviewAssetId());
+        } catch (NumberFormatException | NullPointerException e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "确认清单中的预览资产 ID 无效");
+        }
+        ProofingAssetAccessVO access = signPreviewAsset(assetId, projectId, ttlSeconds);
+        ProofingPublicItemVO vo = new ProofingPublicItemVO();
+        vo.setItemId(item.getItemId());
+        vo.setPreviewAssetId(item.getPreviewAssetId());
+        vo.setDisplayName(item.getDisplayName());
+        vo.setSortOrder(index);
+        vo.setSelected(true);
+        vo.setPreviewUrl(access.getUrl());
+        vo.setPreviewUrlExpiresAt(access.getExpiresAt());
+        vo.setAnnotation(item.getAnnotation());
         return vo;
     }
 
@@ -183,8 +241,11 @@ public class ProofingPublicReadService {
     private ProofingAssetAccessVO signVisiblePreview(ProofingItem item, Long projectId, int ttlSeconds) {
         ThrowUtils.throwIf(item == null || !Objects.equals(item.getProjectId(), projectId),
                 ErrorCode.NOT_FOUND_ERROR, "预览图片不存在");
-        ProofingAsset asset = item.getPreviewAssetId() == null
-                ? null : proofingAssetService.getById(item.getPreviewAssetId());
+        return signPreviewAsset(item.getPreviewAssetId(), projectId, ttlSeconds);
+    }
+
+    private ProofingAssetAccessVO signPreviewAsset(Long assetId, Long projectId, int ttlSeconds) {
+        ProofingAsset asset = assetId == null ? null : proofingAssetService.getById(assetId);
         ThrowUtils.throwIf(asset == null
                         || !Objects.equals(asset.getProjectId(), projectId)
                         || !"PREVIEW".equals(asset.getKind())
@@ -262,7 +323,9 @@ public class ProofingPublicReadService {
         return vo;
     }
 
-    /** 保存或清空已选图片的批注。 */
+    /**
+     * 为单个图片添加itemId
+     */
     @Transactional(rollbackFor = Exception.class)
     public ProofingAnnotationVO addAnnotation(
             Long itemId, String sessionToken, ProofingAnnotationRequest request) {
@@ -336,14 +399,14 @@ public class ProofingPublicReadService {
         return annotation;
     }
 
-    private ProofingAnnotation parseAnnotation(String json) {
+    private  <T> T parseObject(String json,Class<T> clazz) {
         if (json == null) {
             return null;
         }
         try {
-            return objectMapper.readValue(json, ProofingAnnotation.class);
+            return objectMapper.readValue(json, clazz);
         } catch (JsonProcessingException e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "已保存的批注无法解析");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "已保存的 JSON 无法解析");
         }
     }
 
@@ -353,5 +416,116 @@ public class ProofingPublicReadService {
         } catch (JsonProcessingException e) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "批注无法序列化");
         }
+    }
+
+    /** 锁定项目后，在同一事务固定清单并推进项目状态。 */
+    @Transactional(rollbackFor = Exception.class)
+    public ProofingConfirmVO confirmProofing(String sessionToken, ProofingConfirmRequest confirmRequest) {
+        ThrowUtils.throwIf(confirmRequest == null
+                        || StrUtil.isBlank(confirmRequest.getRequestId())
+                        || confirmRequest.getRequestId().length() > 64
+                        || confirmRequest.getExpectedVersion() == null
+                        || confirmRequest.getExpectedVersion() < 0,
+                ErrorCode.PARAMS_ERROR, "确认参数不合法");
+        // 锁住项目
+        ProofingProject sessionProject = requireCustomerProject(sessionToken);
+        ProofingProject locked = proofingProjectMapper.selectForUpdate(sessionProject.getId());
+        ThrowUtils.throwIf(locked == null, ErrorCode.NOT_FOUND_ERROR, "选单不存在");
+        // 查询当前选单状态
+        String status = locked.getStatus();
+        ThrowUtils.throwIf(!ProjectStatus.SELECTING.name().equals(status)
+                        && !ProjectStatus.CONFIRMED.name().equals(status)
+                        && !ProjectStatus.DELIVERED.name().equals(status),
+                ErrorCode.NO_AUTH_ERROR, "当前选单不可访问");
+        // 当前读避免可重复读事务沿用会话校验时建立的旧快照。
+        ProofingSubmission submission = proofingSubmissionService.lambdaQuery()
+                .eq(ProofingSubmission::getProjectId, locked.getId())
+                .last("FOR UPDATE")
+                .one();
+        if (submission != null) {
+            // 如果订单已被提交过
+            ThrowUtils.throwIf(!Objects.equals(submission.getRequestId(), confirmRequest.getRequestId()),
+                    new BusinessException(40904, "选单已由另一次请求确认"));
+            // 查询对应选单
+            ProofingManifest manifest = parseObject(submission.getManifestJson(), ProofingManifest.class);
+            ThrowUtils.throwIf(manifest == null || manifest.getItems() == null,
+                    ErrorCode.SYSTEM_ERROR, "确认清单不可读取");
+            // 创建返回vo
+            ProofingConfirmVO vo = new ProofingConfirmVO();
+            vo.setSubmissionId(String.valueOf(submission.getId()));
+            vo.setSelectedCount(manifest.getItems().size());
+            vo.setConfirmedAt(submission.getConfirmedAt());
+            return vo;
+        }
+
+        // 首次确认先核对状态和版本，再从数据库中的已选照片构造快照。
+        ThrowUtils.throwIf(!ProjectStatus.SELECTING.name().equals(status),
+                new BusinessException(40902, "当前选单不能确认"));
+        Long expectedVersion = confirmRequest.getExpectedVersion();
+        ThrowUtils.throwIf(!Objects.equals(locked.getVersion(), expectedVersion),
+                new BusinessException(40901, "选单版本已变化，请刷新后重试"));
+        // 选出最终被确认的订单
+        List<ProofingItem> selectedItems = proofingItemService.lambdaQuery()
+                .eq(ProofingItem::getProjectId, locked.getId())
+                .eq(ProofingItem::getSelected, 1)
+                .orderByAsc(ProofingItem::getSortOrder, ProofingItem::getId)
+                .list();
+        ThrowUtils.throwIf(locked.getSelectionLimit() == null
+                        || locked.getSelectionLimit() < 1
+                        || selectedItems.isEmpty()
+                        || selectedItems.size() > locked.getSelectionLimit(),
+                new BusinessException(40902, "已选照片数量不符合确认规则"));
+        // 创建图片表
+        List<ProofingManifest.Item> manifestItems = new ArrayList<>(selectedItems.size());
+        for (ProofingItem item : selectedItems) {
+            ProofingAsset preview = item.getPreviewAssetId() == null
+                    ? null : proofingAssetService.getById(item.getPreviewAssetId());
+            ThrowUtils.throwIf(preview == null
+                            || !Objects.equals(preview.getProjectId(), locked.getId())
+                            || !"PREVIEW".equals(preview.getKind())
+                            || !"READY".equals(preview.getStatus())
+                            || preview.getWidth() == null || preview.getWidth() <= 0
+                            || preview.getHeight() == null || preview.getHeight() <= 0,
+                    new BusinessException(40905, "已选照片的预览文件不可用"));
+            ProofingManifest.Item manifestItem = new ProofingManifest.Item();
+            manifestItem.setItemId(String.valueOf(item.getId()));
+            manifestItem.setDisplayName(item.getDisplayName());
+            manifestItem.setPreviewAssetId(String.valueOf(preview.getId()));
+            manifestItem.setPreviewWidth(preview.getWidth());
+            manifestItem.setPreviewHeight(preview.getHeight());
+            manifestItem.setAnnotation(normalizeAnnotation(
+                    parseObject(item.getAnnotation(), ProofingAnnotation.class)));
+            manifestItems.add(manifestItem);
+        }
+        ProofingManifest manifest = new ProofingManifest();
+        manifest.setItems(manifestItems);
+
+        ProofingSubmission newSubmission = new ProofingSubmission();
+        newSubmission.setProjectId(locked.getId());
+        newSubmission.setRequestId(confirmRequest.getRequestId());
+        try {
+            newSubmission.setManifestJson(objectMapper.writeValueAsString(manifest));
+        } catch (JsonProcessingException e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "确认清单无法序列化");
+        }
+        newSubmission.setConfirmedAt(new Date());
+        boolean saved = proofingSubmissionService.save(newSubmission);
+        ThrowUtils.throwIf(!saved, ErrorCode.OPERATION_ERROR, "保存确认清单失败");
+
+        boolean advanced = proofingProjectService.lambdaUpdate()
+                .eq(ProofingProject::getId, locked.getId())
+                .eq(ProofingProject::getStatus, ProjectStatus.SELECTING.name())
+                .eq(ProofingProject::getVersion, expectedVersion)
+                .set(ProofingProject::getStatus, ProjectStatus.CONFIRMED.name())
+                .set(ProofingProject::getVersion, expectedVersion + 1)
+                .update();
+        ThrowUtils.throwIf(!advanced,
+                new BusinessException(40901, "选单状态或版本已变化，请刷新后重试"));
+
+        ProofingConfirmVO vo = new ProofingConfirmVO();
+        vo.setSubmissionId(String.valueOf(newSubmission.getId()));
+        vo.setSelectedCount(manifestItems.size());
+        vo.setConfirmedAt(newSubmission.getConfirmedAt());
+        return vo;
     }
 }

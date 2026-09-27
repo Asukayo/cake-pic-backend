@@ -5,6 +5,7 @@ import com.sharkycake.common.BaseResponse;
 import com.sharkycake.common.ResultUtils;
 import com.sharkycake.proofing.dto.ProofIngProjectSessionRequest;
 import com.sharkycake.proofing.dto.ProofingAnnotationRequest;
+import com.sharkycake.proofing.dto.ProofingConfirmRequest;
 import com.sharkycake.proofing.dto.ProofingProjectSelectRequest;
 import com.sharkycake.proofing.service.ProofingProjectService;
 import com.sharkycake.proofing.service.ProofingPublicReadService;
@@ -41,6 +42,15 @@ public class ProofingPublicController {
             HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
         return ResultUtils.success(proofingPublicReadService.getProject(sessionToken));
+    }
+
+    /** 客户读取确认时固定的照片与批注。 */
+    @GetMapping("/submission")
+    public BaseResponse<ProofingSubmissionVO> getSubmission(
+            @RequestHeader(value = "X-Proofing-Session", required = false) String sessionToken,
+            HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        return ResultUtils.success(proofingPublicReadService.getSubmission(sessionToken));
     }
 
     /** 客户按稳定顺序分页查看当前选片单的照片。 */
@@ -88,7 +98,17 @@ public class ProofingPublicController {
         );
     }
 
-
+    // POST /proofing/public/confirm
+    @PostMapping("/confirm")
+    public BaseResponse<ProofingConfirmVO> confirm(
+            @RequestHeader(value = "X-Proofing-Session", required = false) String sessionToken,
+            @RequestBody ProofingConfirmRequest confirmRequest,
+            HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        return ResultUtils.success(
+                proofingPublicReadService.confirmProofing(sessionToken, confirmRequest)
+        );
+    }
 
 
 }
