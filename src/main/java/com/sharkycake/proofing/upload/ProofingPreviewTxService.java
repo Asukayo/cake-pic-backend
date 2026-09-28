@@ -45,6 +45,9 @@ public class ProofingPreviewTxService {
         this.cosConfig = cosConfig;
     }
 
+    /**
+     * 上传前操作，增加asset记录
+     */
     @Transactional(rollbackFor = Exception.class)
     public ProofingAsset reservePreview(Long projectId, Long expectedVersion,
                                         User loginUser, PreparedPreview preview) {

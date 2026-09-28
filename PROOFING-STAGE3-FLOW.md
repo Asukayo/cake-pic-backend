@@ -1,6 +1,6 @@
 # 第三阶段：分享、客户预览与并发选片
 
-> 按当前 proofing 后端代码绘制。图中的前端动作是接口约定，客户页面尚未实现；编译通过不代表 Redis、MySQL、COS 和并发场景已验收。
+> 按当前 proofing 后端代码绘制。用户已确认第三阶段验收通过；本仓库未收录前端页面代码和具体验证记录。
 
 ## 1. 分享、换会话与预览
 
@@ -85,4 +85,4 @@ sequenceDiagram
 
 对应源码：[分享与会话](src/main/java/com/sharkycake/proofing/service/impl/ProofingProjectServiceImpl.java)、[客户访问和选片](src/main/java/com/sharkycake/proofing/service/ProofingPublicReadService.java)、[项目行锁 SQL](src/main/resources/mapper/ProofingProjectMapper.xml)、[公开接口](src/main/java/com/sharkycake/proofing/controller/ProofingPublicController.java)。
 
-真实 Redis、数据库、COS、分享撤销与并发选片的 HTTP 验收仍待完成。
+第三阶段已由用户验证通过。分享撤销、并发选片等具体场景的复现步骤和结果，以用户实际测试记录为准。

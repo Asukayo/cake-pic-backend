@@ -1,6 +1,6 @@
 # 第二阶段：私有预览与发布流程图
 
-> 依据当前 proofing 后端源码绘制。图表示已写代码的流程，不代表数据库和 COS 联调已通过。
+> 依据当前 proofing 后端源码绘制。用户已确认第二阶段验收通过；具体验证用例与运行记录未收录在仓库。
 
 ```mermaid
 flowchart TD
@@ -37,4 +37,4 @@ flowchart TD
 
 对应源码：[上传编排](src/main/java/com/sharkycake/proofing/upload/ProofingPreviewUploadService.java)、[上传短事务](src/main/java/com/sharkycake/proofing/upload/ProofingPreviewTxService.java)、[清理任务](src/main/java/com/sharkycake/proofing/cleanup/ProofingAssetCleanupService.java)、[项目移除与发布](src/main/java/com/sharkycake/proofing/service/impl/ProofingProjectServiceImpl.java)。
 
-真实数据库、私有 COS、并发与失败补偿的验证仍待完成。
+第二阶段已由用户验证通过。图中的超时与补偿分支是代码设计；是否逐一做过故障注入，应按实际测试记录说明。

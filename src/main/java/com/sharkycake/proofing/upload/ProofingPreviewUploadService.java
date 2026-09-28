@@ -83,12 +83,14 @@ public class ProofingPreviewUploadService {
             // 第一笔事务已经提交，此处不能持有项目行锁。
             storageManager.putObject(asset.getObjectKey(), preview.getFile(), preview.getContentType());
             uploaded = true;
+            // 成功则吸入记录
             return txService.completePreview(projectId, asset.getId(),
                     expectedVersion, loginUser, preview);
         } catch (Exception e) {
             if (asset != null && uploaded) {
                 try {
-                    // COS 已返回成功，可立即交给清理任务；请求异常时对象可能晚到，留在 STAGING 等到期扫描。
+                    // COS 已返回成功，可立即交给清理任务；
+                    // 请求异常时对象可能晚到，留在 STAGING 等到期扫描。
                     txService.markDeletePendingIfStaging(asset.getId());
                 } catch (Exception cleanupError) {
                     e.addSuppressed(cleanupError);
