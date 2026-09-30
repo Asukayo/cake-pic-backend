@@ -1,11 +1,14 @@
 package com.sharkycake.common.controller;
 
+import com.sharkycake.common.annotation.CheckParam;
+import com.sharkycake.common.annotation.StrVal;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 
 import com.sharkycake.common.BaseResponse;
 import com.sharkycake.common.ResultUtils;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -28,4 +31,13 @@ public class MainController {
     public BaseResponse<String> health() {
         return ResultUtils.success("ok");
     }
+
+    @GetMapping("/checkAnnotation/${needTobeChecked}")
+    @CheckParam(ifCheck = true)
+    public BaseResponse<String> check(
+            @StrVal(Min =  0, Max = 10)
+            @PathVariable String needTobeChecked){
+        return ResultUtils.success("check ok");
+    }
+
 }

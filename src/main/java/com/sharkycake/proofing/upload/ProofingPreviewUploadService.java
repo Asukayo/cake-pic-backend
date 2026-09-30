@@ -107,27 +107,36 @@ public class ProofingPreviewUploadService {
      * 本方法中途失败则自行删除已创建的临时文件。
      */
     PreparedPreview preparePreview(MultipartFile file) throws Exception {
+        // 检查文件是否为空、是否超过20MB
         ThrowUtils.throwIf(file == null || file.isEmpty() || file.getSize() > MAX_SOURCE_BYTES,
                 ErrorCode.PARAMS_ERROR, "图片不能为空且不得超过 20 MiB");
-
+        // BufferedImage已经解码到内存中的图片，可以理解为一张像素画布
         BufferedImage source;
-        try (InputStream stream = file.getInputStream();
+        try (   // 获取上传文件的读取通道
+                InputStream stream = file.getInputStream();
+                // 包装成图片处理 API 使用的输入流，支持图片解析需要的读取和定位操作。
              ImageInputStream imageInput = ImageIO.createImageInputStream(stream)) {
+            // 判空操作
             ThrowUtils.throwIf(imageInput == null, ErrorCode.PARAMS_ERROR, "无法读取图片");
+            // 寻找能够识别当前输入内容的解码器。
             Iterator<ImageReader> readers = ImageIO.getImageReaders(imageInput);
             ThrowUtils.throwIf(!readers.hasNext(), ErrorCode.PARAMS_ERROR, "只支持 JPEG/PNG 图片");
             ImageReader reader = readers.next();
             try {
+                // 两个true分别是什么意思    按图像索引向前读取；这里只读取索引 0   ； 允许解码器忽略图片元数据，减少不必要的处理
                 reader.setInput(imageInput, true, true);
                 // 文件名和请求 Content-Type 都可伪造；以实际解码器识别的格式为准。
+                // 读取解码器识别出的格式，并只允许 JPEG 或 PNG
                 String format = reader.getFormatName().toUpperCase(Locale.ROOT);
                 ThrowUtils.throwIf(!"JPEG".equals(format) && !"PNG".equals(format),
                         ErrorCode.PARAMS_ERROR, "只支持 JPEG/PNG 图片");
                 // 先读头部尺寸，再完整解码，避免超大像素图片直接占满内存。
+                // 这里的0表示文件中的第一张图像
                 int width = reader.getWidth(0);
                 int height = reader.getHeight(0);
                 ThrowUtils.throwIf(width <= 0 || height <= 0 || (long) width * height > MAX_PIXELS,
                         ErrorCode.PARAMS_ERROR, "图片像素不得超过 4000 万");
+                // 得到完整的 BufferedImage，也就是内存中的像素图
                 source = reader.read(0);
                 ThrowUtils.throwIf(source == null, ErrorCode.PARAMS_ERROR, "图片解码失败");
             } catch (IIOException e) {
@@ -136,24 +145,33 @@ public class ProofingPreviewUploadService {
                 reader.dispose();
             }
         }
-
+        // 某些图片的像素排列方向和正确显示方向不同。比如原始像素是横向的，但 EXIF 告诉查看器需要旋转 90° 后显示
         // EXIF 方向只用来调整像素；输出文件重新编码，不复制原图的 EXIF/GPS。
         int orientation = readOrientation(file);
         boolean swapDimensions = orientation >= 5;
         int orientedWidth = swapDimensions ? source.getHeight() : source.getWidth();
         int orientedHeight = swapDimensions ? source.getWidth() : source.getHeight();
+        // 计算缩放比例，使得长边最多为1600像素
         double scale = Math.min(1.0, (double) MAX_LONG_EDGE / Math.max(orientedWidth, orientedHeight));
         int targetWidth = Math.max(1, (int) Math.round(orientedWidth * scale));
         int targetHeight = Math.max(1, (int) Math.round(orientedHeight * scale));
 
         // 统一输出 JPEG；透明 PNG 铺白底，避免透明区域变黑。
+        // 创建创建一张目标尺寸的空白画布
         BufferedImage preview = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB);
+        // 取得这张画布的绘图工具
         Graphics2D graphics = preview.createGraphics();
         try {
+            // 设置颜色为白色
             graphics.setColor(Color.WHITE);
+            // 用白色填满画布
+            // 使得完全透明的区域显示为白色，半透明的区域则和白色背景合成
             graphics.fillRect(0, 0, targetWidth, targetHeight);
+            // 设置缩放时的插值方式
+            // 缩放图片时，目标像素不一定正好对应原图中的某一个像素，因此需要计算新像素的颜色，这就是“插值”
             graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
                     RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            // 组合出一套坐标转换规则，再把原图画到目标画布上
             AffineTransform transform = AffineTransform.getScaleInstance(
                     targetWidth / (double) orientedWidth, targetHeight / (double) orientedHeight);
             transform.concatenate(orientationTransform(orientation, source.getWidth(), source.getHeight()));
@@ -188,17 +206,27 @@ public class ProofingPreviewUploadService {
     }
 
     /** 只读取 EXIF 朝向；无朝向标签时按正常方向处理。 */
-    /** 只读取 EXIF 朝向；无朝向标签时按正常方向处理。 */
+    // EXIF 是附着在图片中的信息，常见内容包括：
+    //- 拍摄时间。
+    //- 相机型号。
+    //- 曝光参数。
+    //- GPS 位置。
+    //- 图片朝向。
     private int readOrientation(MultipartFile file) throws Exception {
         try (InputStream stream = file.getInputStream()) {
+            // 解析文件中的元数据。第二个参数是文件字节长度
             Metadata metadata = ImageMetadataReader.readMetadata(stream, file.getSize());
+            // 从解析结果中取得 EXIF 的一组标签。
             ExifIFD0Directory exif = metadata.getFirstDirectoryOfType(ExifIFD0Directory.class);
+            // 读取其中的朝向标签。
             Integer orientation = exif == null ? null : exif.getInteger(ExifIFD0Directory.TAG_ORIENTATION);
             if (orientation == null) {
                 return 1;
             }
             ThrowUtils.throwIf(orientation < 1 || orientation > 8,
                     ErrorCode.PARAMS_ERROR, "无效的图片朝向");
+            // 输出像素本身已经摆正，后续显示不用继续依赖原始朝向标签。
+            // 预览不携带原始 GPS、拍摄时间等 EXIF 信息。
             return orientation;
         } catch (ImageProcessingException e) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "无法读取图片元数据");
